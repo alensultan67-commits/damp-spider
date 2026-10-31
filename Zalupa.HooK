@@ -1,0 +1,3156 @@
+-- ═══════════════════════════════════════════════════════════════════════════
+-- [BLOCK 01] SERVICES & CONSTANTS
+-- ═══════════════════════════════════════════════════════════════════════════
+local Players           = game:GetService("Players")
+local RunService        = game:GetService("RunService")
+local UserInputService  = game:GetService("UserInputService")
+local Workspace         = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Lighting          = game:GetService("Lighting")
+local LocalPlayer       = Players.LocalPlayer
+local Camera            = Workspace.CurrentCamera
+local Mouse             = LocalPlayer:GetMouse()
+local GuiInset          = game:GetService("GuiService"):GetGuiInset()
+
+local ReplicatedPlayers = ReplicatedStorage:WaitForChild("Players")
+local ItemsListFolder   = ReplicatedStorage:FindFirstChild("ItemsList")
+
+local function get_nocollision()
+    return Workspace:FindFirstChild("NoCollision") or Workspace
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- [BLOCK 02] OBSIDIAN UI INIT
+-- ═══════════════════════════════════════════════════════════════════════════
+local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
+local Library      = loadstring(game:HttpGet(repo .. "Library.lua"))()
+local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
+local SaveManager  = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
+
+ThemeManager:SetLibrary(Library)
+SaveManager:SetLibrary(Library)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({})
+ThemeManager:SetFolder("ZalupaHooK")
+SaveManager:SetFolder("ZalupaHooK/Configs")
+
+local Window = Library:CreateWindow({
+    Title = "Zalupa.HooK",
+    Footer = "Tomboy Combat + pin.reta merge",
+    Icon = 95816097006870,
+    NotifySide = "Right",
+    ShowCustomCursor = true,
+})
+
+local Tabs = {
+    Combat   = Window:AddTab("Combat"),
+    Visuals  = Window:AddTab("Visuals"),
+    Player   = Window:AddTab("Player"),
+    Settings = Window:AddTab("Settings"),
+}
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- [BLOCK 03] STATE GLOBALS
+-- ═══════════════════════════════════════════════════════════════════════════
+local silent_aim = {
+    enabled = false, part = "Head", instant = true,
+    fov = true, fov_show = false, fov_size = 150,
+    target_part = nil, isvisible = false,
+    nospread = false, target_npc = false, target_heli = false,
+    testwallbang = false,
+    triggerbot = false, triggerbot_manipulation = false,
+    corner_shoot = false, corner_shoot_dist = 5,
+    manipulated = false, manipulated_origin = nil,
+    tracer = false, tracer_style = "Tracer 1",
+    tracer_color = Color3.new(1,1,1), tracer_color2 = Color3.fromRGB(0,128,255),
+    tracer_thickness = 0.5, tracer_lifetime = 1,
+    _exact_fire_tick = 0, _trigger_held = false
+}
+
+local norecoil = false
+local nobob = false
+local instantaim = false
+local forceauto = false
+local rapid_fire = false
+local rapid_fire_delay = 0.05
+local instant_equip = false
+local original_recoils = {}
+local packetautoshoot = false
+local shootspeed = 1
+
+-- FIX #1: melee переменные на верхнем уровне (раньше были локальны внутри колбэка InstantMosin)
+local no_melee_cooldown = false
+local melee_reach = false
+local melee_reach_dist = 5.0
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- [BLOCK 03b] GUN MODS EXTENSION — unlock firemodes + charge shot state
+-- ═══════════════════════════════════════════════════════════════════════════
+local unlock_firemodes = false
+local charge_shot_enabled = false
+local charge_shot_key = nil
+local charge_shot_bullets = 10
+local charge_shot_alpha = 0
+local charge_shot_display_alpha = 0
+local charge_shot_reset_pending = false
+local last_charge_shot_active = false
+local charge_shot_bar_width = 100
+local charge_shot_bar_height = 6
+local charge_shot_bar_offset = 58
+local charge_shot_bar_color = Color3.fromRGB(0, 255, 0)
+local charge_shot_text_color = Color3.fromRGB(255, 255, 255)
+
+local vm_x, vm_y, vm_z = 0, 0, 0
+local cam_fov_enabled = false
+local cam_fov_size = 70
+local cam_zoom_enabled = false
+local cam_zoom_size = 10
+local no_screen_fx = false
+local no_muzzle_flash = false
+local hit_effect_enabled = false
+local hit_effect_amount = 100
+local item_finder_esp_enabled = false
+local selected_finder_items = {}
+
+-- Damage numbers / hit ghost state (UI в Части 2)
+local damage_numbers_enabled = false
+local damage_numbers_color = Color3.fromRGB(255, 75, 75)
+local damage_numbers_random_dir = false
+local damage_numbers_spread = 1
+local hitghost_enabled = false
+local hitghost_color = Color3.fromRGB(0, 255, 255)
+local hitghost_lifetime = 1.5
+
+local world_globals = {
+    fullbright = false,
+    nofog = false,
+    noshadows = false,
+    noleafs = false,
+}
+
+local invcheck = {
+    enabled = false,
+    fullInventory = false, showCorpse = false,
+    showValue = false, showTarget = false,
+    targetColor = Color3.fromRGB(255, 255, 255),
+    mainScale = 1, fullScale = 1
+}
+local invCache = {
+    lastTargetInventory = nil, lastFullInventory = nil,
+    lastTargetValueName = nil, lastTargetValue = 0,
+}
+
+local mainScaleObj, fullScaleObj
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- [BLOCK 04] UTILITIES (диспетчеры)
+-- ═══════════════════════════════════════════════════════════════════════════
+local cheat = { connections = { heartbeats = {}, renderstepped = {} }, drawings = {} }
+cheat.utility = {}
+
+function cheat.utility.new_heartbeat(func)
+    local obj = {}
+    cheat.connections.heartbeats[func] = func
+    function obj:Disconnect() cheat.connections.heartbeats[func] = nil; func = nil end
+    return obj
+end
+function cheat.utility.new_renderstepped(func)
+    local obj = {}
+    cheat.connections.renderstepped[func] = func
+    function obj:Disconnect() cheat.connections.renderstepped[func] = nil; func = nil end
+    return obj
+end
+function cheat.utility.new_drawing(drawobj, args)
+    local obj = Drawing.new(drawobj)
+    for i, v in pairs(args) do obj[i] = v end
+    cheat.drawings[obj] = obj
+    return obj
+end
+function cheat.utility.remove_drawing(drawing)
+    if not drawing then return end
+    cheat.drawings[drawing] = nil
+    pcall(function() drawing:Remove() end)
+end
+
+RunService.Heartbeat:Connect(function(delta)
+    local snapshot = table.clone(cheat.connections.heartbeats)
+    for _, f in pairs(snapshot) do pcall(f, delta) end
+end)
+RunService.RenderStepped:Connect(function(delta)
+    local snapshot = table.clone(cheat.connections.renderstepped)
+    for _, f in pairs(snapshot) do pcall(f, delta) end
+end)
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- [BLOCK 04b] TRACER / BEAM HELPERS
+-- ═══════════════════════════════════════════════════════════════════════════
+local function make_beam(Origin, Position, Color, Thickness)
+    local nc = get_nocollision()
+    local part1 = Instance.new("Part", nc)
+    local part2 = Instance.new("Part", nc)
+    part1.Position=Origin;   part2.Position=Position
+    part1.Transparency=1;    part2.Transparency=1
+    part1.CanCollide=false;  part2.CanCollide=false
+    part1.Size=Vector3.zero; part2.Size=Vector3.zero
+    part1.Anchored=true;     part2.Anchored=true
+    local oa = Instance.new("Attachment",part1)
+    local pa = Instance.new("Attachment",part2)
+    local Beam = Instance.new("Beam", nc)
+    Beam.Name="Beam"
+    Beam.Color=ColorSequence.new{ColorSequenceKeypoint.new(0,Color),ColorSequenceKeypoint.new(1,Color)}
+    Beam.LightEmission=1; Beam.LightInfluence=1
+    Beam.TextureMode=Enum.TextureMode.Static; Beam.TextureSpeed=0
+    Beam.Texture="rbxassetid://446111271"
+    Beam.Transparency=NumberSequence.new(0)
+    Beam.Attachment0=oa; Beam.Attachment1=pa
+    Beam.FaceCamera=true; Beam.Segments=1
+    Beam.Width0=Thickness or 0.25; Beam.Width1=Thickness or 0.25
+    return Beam, part1, part2
+end
+
+local function create_advanced_tracer(Origin, Position, Color1, Color2, Thickness)
+    local nc = get_nocollision()
+    local part1 = Instance.new("Part", nc)
+    local part2 = Instance.new("Part", nc)
+    part1.Position=Origin;   part2.Position=Position
+    part1.Transparency=1;    part2.Transparency=1
+    part1.CanCollide=false;  part2.CanCollide=false
+    part1.Size=Vector3.zero; part2.Size=Vector3.zero
+    part1.Anchored=true;     part2.Anchored=true
+    local oa = Instance.new("Attachment",part1)
+    local pa = Instance.new("Attachment",part2)
+    local colorSeq = ColorSequence.new{ColorSequenceKeypoint.new(0,Color1),ColorSequenceKeypoint.new(0.3,Color2),ColorSequenceKeypoint.new(1,Color2)}
+    local CoreBeam = Instance.new("Beam", nc)
+    CoreBeam.Name="CoreBeam"; CoreBeam.Color=colorSeq; CoreBeam.Width0=Thickness; CoreBeam.Width1=Thickness
+    CoreBeam.Texture=""; CoreBeam.TextureSpeed=0; CoreBeam.LightEmission=1; CoreBeam.LightInfluence=0
+    CoreBeam.TextureMode=Enum.TextureMode.Stretch; CoreBeam.Attachment0=oa; CoreBeam.Attachment1=pa
+    CoreBeam.FaceCamera=true; CoreBeam.Segments=1; CoreBeam.Transparency=NumberSequence.new(0)
+    local PulseBeam = Instance.new("Beam", nc)
+    PulseBeam.Name="PulseBeam"; PulseBeam.Color=colorSeq
+    PulseBeam.Width0=Thickness*0.5; PulseBeam.Width1=Thickness*0.5
+    PulseBeam.Texture="rbxassetid://446111271"; PulseBeam.TextureSpeed=0; PulseBeam.LightEmission=1; PulseBeam.LightInfluence=0
+    PulseBeam.TextureMode=Enum.TextureMode.Stretch; PulseBeam.Attachment0=oa; PulseBeam.Attachment1=pa
+    PulseBeam.FaceCamera=true; PulseBeam.Segments=1; PulseBeam.Transparency=NumberSequence.new(0)
+    return {CoreBeam, PulseBeam}, part1, part2
+end
+
+local function spawn_tracer(t_orig, t_target, use_style2)
+    if not silent_aim.tracer then return end
+    t_target = t_target or Vector3.zero
+    local lifetime = silent_aim.tracer_lifetime
+    if use_style2 and silent_aim.tracer_style == "Tracer 2" then
+        local beams,d1,d2 = create_advanced_tracer(t_orig, t_target, silent_aim.tracer_color, silent_aim.tracer_color2, silent_aim.tracer_thickness)
+        local t=0
+        local conn
+        conn = cheat.utility.new_renderstepped(function(delta)
+            t = t + delta
+            local trans = math.clamp((t/lifetime)^2, 0, 1)
+            local pulse = (math.sin(t*20)+1)/2
+            for _,b in pairs(beams) do
+                b.Transparency = NumberSequence.new(trans)
+                if b.Name=="PulseBeam" then
+                    b.Width0 = silent_aim.tracer_thickness*(0.5+pulse)
+                    b.Width1 = silent_aim.tracer_thickness*(0.5+pulse)
+                end
+            end
+            if t >= lifetime then
+                for _,b in pairs(beams) do b:Destroy() end
+                d1:Destroy(); d2:Destroy(); conn:Disconnect()
+            end
+        end)
+    else
+        local beam,d1,d2 = make_beam(t_orig, t_target, silent_aim.tracer_color, silent_aim.tracer_thickness)
+        local wtf = -1
+        local conn
+        conn = cheat.utility.new_renderstepped(function(delta)
+            wtf = wtf + delta
+            beam.Transparency = NumberSequence.new(math.clamp(wtf,0,1))
+            if wtf >= 1 then
+                beam:Destroy(); d1:Destroy(); d2:Destroy(); conn:Disconnect()
+            end
+        end)
+    end
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- [BLOCK 05] COMBAT TAB — Silent Aim / Triggerbot / Gun Mods
+-- ═══════════════════════════════════════════════════════════════════════════
+local AimGroup = Tabs.Combat:AddLeftGroupbox("Silent Aim")
+AimGroup:AddToggle("AimEnabled", { Text = "Enable Silent Aim", Default = false, Callback = function(v) silent_aim.enabled = v end })
+AimGroup:AddDropdown("AimPart", { Text = "Target Part", Values = {"Head","FaceHitBox","HeadTopHitbox","UpperTorso","LowerTorso","HumanoidRootPart","LeftFoot","LeftLowerLeg","LeftUpperLeg","LeftHand","LeftLowerArm","LeftUpperArm","RightFoot","RightLowerLeg","RightUpperLeg","RightHand","RightLowerArm","RightUpperArm"}, Default = "Head", Multi = false, Callback = function(v) silent_aim.part = v end })
+AimGroup:AddToggle("InstantHit", { Text = "Instant Hit", Default = true, Callback = function(v) silent_aim.instant = v end })
+AimGroup:AddToggle("Wallbang", { Text = "Wallbang", Default = false, Callback = function(v) silent_aim.testwallbang = v end })
+AimGroup:AddToggle("Manipulation", { Text = "Manipulation (Corner)", Default = false, Callback = function(v) silent_aim.corner_shoot = v end })
+AimGroup:AddSlider("ManipDist", { Text = "Manipulation Distance", Min = 5, Max = 50, Rounding = 1, Default = 5, Callback = function(v) silent_aim.corner_shoot_dist = v end })
+AimGroup:AddToggle("TargetAI", { Text = "Target AI", Default = false, Callback = function(v) silent_aim.target_npc = v end })
+AimGroup:AddToggle("TargetHeli", { Text = "Target Heli", Default = false, Callback = function(v) silent_aim.target_heli = v end })
+AimGroup:AddToggle("UseFOV", { Text = "Use FOV (aim only near cursor)", Default = true, Callback = function(v) silent_aim.fov = v end })
+AimGroup:AddToggle("ShowFOV", { Text = "Show FOV Circle", Default = false, Callback = function(v) silent_aim.fov_show = v end })
+AimGroup:AddSlider("FOVSize", { Text = "FOV Size", Min = 50, Max = 600, Rounding = 1, Default = 150, Suffix = "px", Callback = function(v) silent_aim.fov_size = v end })
+
+local TrigGroup = Tabs.Combat:AddLeftGroupbox("Triggerbot")
+TrigGroup:AddToggle("TrigEnabled", { Text = "Enable Triggerbot", Default = false, Callback = function(v) silent_aim.triggerbot = v end })
+TrigGroup:AddToggle("TrigManip", { Text = "Shoot On Manipulated", Default = false, Callback = function(v) silent_aim.triggerbot_manipulation = v end })
+
+local WeaponGroup = Tabs.Combat:AddRightGroupbox("Gun Mods")
+WeaponGroup:AddToggle("NoSpread", { Text = "No Spread / No Drop", Default = true, Callback = function(v) silent_aim.nospread = v end })
+WeaponGroup:AddToggle("NoRecoil", { Text = "No Recoil", Default = false, Callback = function(v) norecoil = v end })
+WeaponGroup:AddToggle("NoGunBob", { Text = "No Gun Bob", Default = false, Callback = function(v) nobob = v end })
+WeaponGroup:AddToggle("InstantAim", { Text = "Instant Aim", Default = false, Callback = function(v) instantaim = v end })
+WeaponGroup:AddToggle("ForceAuto", { Text = "Force Auto", Default = false, Callback = function(v) forceauto = v end })
+WeaponGroup:AddToggle("RapidFire", { Text = "Rapid Fire", Default = false, Callback = function(v) rapid_fire = v end })
+WeaponGroup:AddSlider("RapidFireDelay", { Text = "Rapid Fire Delay", Min = 1, Max = 50, Rounding = 1, Default = 5, Callback = function(v) rapid_fire_delay = v / 100 end })
+WeaponGroup:AddToggle("InstantEquip", { Text = "Instant Equip", Default = false, Callback = function(v) instant_equip = v end })
+
+-- FIX #1: InstantMosin — только recoil. Melee-UI вынесен ниже на верхний уровень.
+WeaponGroup:AddToggle("InstantMosin", { Text = "Instant Mosin (R7)", Default = false, Callback = function(v)
+    pcall(function()
+        local ammo = ReplicatedStorage:FindFirstChild("AmmoTypes")
+        if not ammo then return end
+        if v then
+            for _,a in pairs(ammo:GetChildren()) do
+                if not original_recoils[a] then original_recoils[a] = a:GetAttribute("RecoilStrength") end
+                a:SetAttribute("RecoilStrength", 1)
+            end
+        else
+            for _,a in pairs(ammo:GetChildren()) do
+                if original_recoils[a] then a:SetAttribute("RecoilStrength", original_recoils[a]) end
+            end
+        end
+    end)
+end })
+
+-- FIX #1: Melee UI на верхнем уровне (раньше создавался внутри InstantMosin колбэка и был невидим для хуков)
+WeaponGroup:AddToggle("NoMeleeCD", { Text = "No Melee Cooldown", Default = false, Callback = function(v) no_melee_cooldown = v end })
+WeaponGroup:AddToggle("MeleeReach", { Text = "Melee Reach", Default = false, Callback = function(v) melee_reach = v end })
+WeaponGroup:AddSlider("MeleeReachDist", { Text = "Melee Extra Studs", Min = 1, Max = 15, Rounding = 1, Default = 5, Callback = function(v) melee_reach_dist = v end })
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- [BLOCK 05b] UNLOCK FIREMODES + CHARGE SHOT (интеграция из pin.reta)
+-- ═══════════════════════════════════════════════════════════════════════════
+WeaponGroup:AddToggle("UnlockFiremodes", {
+    Text = "Unlock Firemodes (Auto on all guns)",
+    Default = false,
+    Callback = function(v) unlock_firemodes = v end
+})
+
+WeaponGroup:AddLabel("--- CHARGE SHOT ---")
+local charge_shot_toggle = WeaponGroup:AddToggle("ChargeShot", {
+    Text = "Charge Shot",
+    Default = false,
+    Callback = function(v)
+        charge_shot_enabled = v == true
+        if not charge_shot_enabled then
+            charge_shot_alpha = 0
+            charge_shot_display_alpha = 0
+            charge_shot_reset_pending = false
+            last_charge_shot_active = false
+        end
+    end
+})
+charge_shot_key = charge_shot_toggle:AddKeyPicker("ChargeShotKey", {
+    Default = "None", Mode = "Toggle", SyncToggleState = true,
+    Text = "Charge Shot Key", NoUI = false
+})
+WeaponGroup:AddSlider("ChargeShotBullets", {
+    Text = "Charge Shot Bullets", Default = 10, Min = 1, Max = 15, Rounding = 0,
+    Callback = function(v) charge_shot_bullets = v end
+})
+WeaponGroup:AddSlider("ChargeBarWidth", {
+    Text = "Charge Bar Width", Default = 100, Min = 40, Max = 300, Rounding = 0,
+    Callback = function(v) charge_shot_bar_width = v end
+})
+WeaponGroup:AddSlider("ChargeBarHeight", {
+    Text = "Charge Bar Height", Default = 6, Min = 2, Max = 30, Rounding = 0,
+    Callback = function(v) charge_shot_bar_height = v end
+})
+WeaponGroup:AddSlider("ChargeBarOffset", {
+    Text = "Charge Bar Y Offset", Default = 58, Min = -200, Max = 300, Rounding = 0,
+    Callback = function(v) charge_shot_bar_offset = v end
+})
+charge_shot_toggle:AddColorPicker("ChargeBarColor", {
+    Default = Color3.fromRGB(0, 255, 0), Title = "Charge Bar Color",
+    Callback = function(c) charge_shot_bar_color = c end
+})
+charge_shot_toggle:AddColorPicker("ChargeTextColor", {
+    Default = Color3.fromRGB(255, 255, 255), Title = "Charge Text Color",
+    Callback = function(c) charge_shot_text_color = c end
+})
+
+-- Charge shot HUD (Drawing)
+local charge_widget = {
+    bg = cheat.utility.new_drawing("Square", {
+        Size = Vector2.new(102, 8), Position = Vector2.new(0, 0),
+        Color = Color3.fromRGB(20, 20, 20), Filled = true, Transparency = 1,
+        Visible = false, ZIndex = 2
+    }),
+    fill = cheat.utility.new_drawing("Square", {
+        Size = Vector2.new(0, 6), Position = Vector2.new(0, 0),
+        Color = Color3.fromRGB(0, 255, 0), Filled = true, Transparency = 1,
+        Visible = false, ZIndex = 3
+    }),
+    text = cheat.utility.new_drawing("Text", {
+        Text = "CHARGE SHOT [0 / 10]", Size = 13, Center = true, Outline = true,
+        OutlineColor = Color3.new(0, 0, 0), Color = Color3.new(1, 1, 1),
+        Position = Vector2.new(0, 0), Visible = false, ZIndex = 4
+    })
+}
+
+cheat.utility.new_renderstepped(function(delta)
+    local active = charge_shot_enabled == true
+    if charge_shot_reset_pending then
+        charge_shot_alpha = 0
+        charge_shot_display_alpha = 0
+        charge_shot_reset_pending = false
+    end
+    if active and not last_charge_shot_active then
+        charge_shot_alpha = 0
+        charge_shot_display_alpha = 0
+    end
+    last_charge_shot_active = active
+
+    if not active then
+        charge_widget.bg.Visible = false
+        charge_widget.fill.Visible = false
+        charge_widget.text.Visible = false
+        charge_shot_alpha = 0
+        charge_shot_display_alpha = 0
+        charge_shot_reset_pending = false
+        return
+    end
+
+    charge_shot_alpha = math.clamp(charge_shot_alpha + ((delta or 0) * 0.45), 0, 1)
+    local frame_delta = math.clamp(tonumber(delta) or 0, 0, 0.1)
+    local smooth_alpha = 1 - math.exp(-14 * frame_delta)
+    charge_shot_display_alpha += (charge_shot_alpha - charge_shot_display_alpha) * smooth_alpha
+    if math.abs(charge_shot_alpha - charge_shot_display_alpha) < 0.0005 then
+        charge_shot_display_alpha = charge_shot_alpha
+    end
+
+    local viewport = Camera.ViewportSize
+    local center = Vector2.new(viewport.X / 2, viewport.Y / 2)
+    local barWidth = charge_shot_bar_width
+    local barHeight = charge_shot_bar_height
+    local barPos = center + Vector2.new(-barWidth / 2, charge_shot_bar_offset)
+
+    charge_widget.bg.Position = barPos - Vector2.new(1, 1)
+    charge_widget.bg.Size = Vector2.new(barWidth + 2, barHeight + 2)
+    charge_widget.bg.Color = Color3.fromRGB(20, 20, 20)
+    charge_widget.bg.Visible = true
+
+    local max_b = math.clamp(math.floor(charge_shot_bullets), 1, 15)
+    local cur_b = math.clamp(math.floor((charge_shot_alpha * max_b) + 0.5), 1, max_b)
+
+    charge_widget.fill.Position = barPos
+    charge_widget.fill.Size = Vector2.new(barWidth * charge_shot_display_alpha, barHeight)
+    charge_widget.fill.Color = charge_shot_bar_color
+    charge_widget.fill.Visible = true
+
+    charge_widget.text.Position = barPos + Vector2.new(barWidth / 2, -16)
+    charge_widget.text.Color = charge_shot_text_color
+    charge_widget.text.Text = string.format("CHARGE SHOT [%d / %d]", cur_b, max_b)
+    charge_widget.text.Visible = true
+end)
+
+function cheat.get_charge_shot_count()
+    if charge_shot_enabled ~= true then return 1 end
+    local max_bullets = math.clamp(math.floor(charge_shot_bullets), 1, 15)
+    local charged = math.clamp(math.floor((charge_shot_alpha * max_bullets) + 0.5), 1, max_bullets)
+    charge_shot_reset_pending = true
+    return charged
+end
+
+-- Reload mechanics
+local instant_reload = false
+local auto_reload = false
+local auto_refill_mag = false
+
+WeaponGroup:AddToggle("InstantReload", { Text = "Instant Reload", Default = false, Callback = function(v) instant_reload = v end })
+WeaponGroup:AddToggle("AutoReload", { Text = "Auto Reload", Default = false, Callback = function(v) auto_reload = v end })
+WeaponGroup:AddToggle("AutoRefillMag", { Text = "Auto Refill Mag", Default = false, Callback = function(v) auto_refill_mag = v end })
+
+task.spawn(function()
+    local reload_remote        = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Reload")
+    local equip_remote         = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Equip")
+    local inventorymove_remote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("InventoryMove")
+    local local_game_data      = ReplicatedStorage:WaitForChild("Players"):WaitForChild(LocalPlayer.Name)
+    local local_gameplayvars   = local_game_data:WaitForChild("Status"):WaitForChild("GameplayVariables")
+
+    local fps_module
+    pcall(function() fps_module = require(ReplicatedStorage.Modules.FPS) end)
+    if not fps_module then return end
+    local update_fps = getupvalue(fps_module.new, 5)
+
+    local fps_reloadtypes, fps_usetypes
+    for _, v in getgc(true) do
+        if type(v) ~= "table" then continue end
+        if not fps_reloadtypes and rawget(v, "loadByHand") and type(rawget(v, "magazine")) == "function" then
+            fps_reloadtypes = v
+        end
+        if not fps_usetypes and type(rawget(v, "RangedWeaponDefault")) == "function" and type(rawget(v, "MeleeWeaponDefault")) == "function" then
+            fps_usetypes = v
+        end
+        if fps_reloadtypes and fps_usetypes then break end
+    end
+
+    local function get_compatible_mag(fps_object)
+        local chosen_mag, loaded_mag_ammo = nil, 0
+        local compatable_mags = fps_object.itemProperties and fps_object.itemProperties.CompatibleMagazines
+        if not compatable_mags then return nil end
+        for _, container in local_game_data.Inventory:GetChildren() do
+            local inventory = container:FindFirstChild("Inventory")
+            if not inventory then continue end
+            for _, item in inventory:GetChildren() do
+                if not compatable_mags:GetAttribute(item.Name) then continue end
+                local loaded_ammo = item:GetAttribute("LoadedAmmo") or 0
+                if chosen_mag and (loaded_ammo <= 0 or loaded_mag_ammo >= loaded_ammo) then continue end
+                chosen_mag = item
+                loaded_mag_ammo = loaded_ammo
+            end
+        end
+        return chosen_mag, loaded_mag_ammo
+    end
+
+    local function get_compatible_ammo(fps_object, arg_ammo)
+        local needed_ammo = fps_object.MaxAmmo - fps_object.Bullets
+        local chosen_ammo, ammo_amount = arg_ammo, arg_ammo and arg_ammo:GetAttribute("Amount") or 0
+        if needed_ammo <= 0 or (chosen_ammo and ammo_amount) then
+            return chosen_ammo, needed_ammo > ammo_amount and ammo_amount or needed_ammo
+        end
+        local item_properties = fps_object.itemProperties
+        local compatible_ammo = item_properties and item_properties.CompatibleAmmo
+        local preferred_ammo = item_properties and item_properties:GetAttribute("PreferredAmmo")
+        if not compatible_ammo then return nil, 0 end
+        for _, container in local_game_data.Inventory:GetChildren() do
+            local inventory = container:FindFirstChild("Inventory")
+            if not inventory then continue end
+            for _, item in inventory:GetChildren() do
+                if not compatible_ammo:GetAttribute(item.Name) then continue end
+                if preferred_ammo and preferred_ammo ~= item.Name then continue end
+                local loaded_ammo = (item:GetAttribute("Amount") or 0)
+                if chosen_ammo and ammo_amount >= loaded_ammo then continue end
+                ammo_amount = loaded_ammo
+                chosen_ammo = item
+            end
+        end
+        return chosen_ammo, needed_ammo > ammo_amount and ammo_amount or needed_ammo
+    end
+
+    -- Auto refill (упрощённая копия из pin.reta)
+    local itemsList = ReplicatedStorage:FindFirstChild("ItemsList")
+    local function getItemTemplate(itemName)
+        if itemsList and itemsList:FindFirstChild(itemName) then
+            return itemsList[itemName]:FindFirstChild("ItemProperties")
+        end
+        return nil
+    end
+
+    task.spawn(function()
+        while true do
+            task.wait(0.5)
+            if auto_refill_mag then
+                pcall(function()
+                    for _, container in ipairs(local_game_data.Inventory:GetChildren()) do
+                        local inventory = container:FindFirstChild("Inventory")
+                        if not inventory then continue end
+                        for _, item in ipairs(inventory:GetChildren()) do
+                            local loadedAmmo = item:GetAttribute("LoadedAmmo")
+                            local propObj = item:FindFirstChild("ItemProperties")
+                            local propVal = (propObj and propObj:IsA("ObjectValue")) and propObj.Value
+                            local templateProp = getItemTemplate(item.Name) or (propVal and getItemTemplate(propVal.Name))
+                            local slotType = item:GetAttribute("SlotType") or (templateProp and templateProp:GetAttribute("SlotType"))
+                            local itemType = item:GetAttribute("ItemType") or (templateProp and templateProp:GetAttribute("ItemType"))
+                            local isMag = (loadedAmmo ~= nil) or (slotType == "Magazine") or (itemType == "Magazine") or item.Name:find("Mag") or item.Name:find("Drum") or item.Name:find("AmmoBox")
+                            if isMag then
+                                loadedAmmo = loadedAmmo or 0
+                                local maxAmmo = item:GetAttribute("MaxLoadedAmmo") or (templateProp and templateProp:GetAttribute("MaxLoadedAmmo")) or item:GetAttribute("MaxAmmo") or 30
+                                if loadedAmmo < maxAmmo then
+                                    local compatibleAmmo = (templateProp and templateProp:FindFirstChild("CompatibleAmmo")) or (propVal and propVal:FindFirstChild("CompatibleAmmo"))
+                                    local foundAmmo = nil
+                                    for _, c2 in ipairs(local_game_data.Inventory:GetChildren()) do
+                                        local inv2 = c2:FindFirstChild("Inventory")
+                                        if not inv2 then continue end
+                                        for _, ammoItem in ipairs(inv2:GetChildren()) do
+                                            local ammoAmount = ammoItem:GetAttribute("Amount")
+                                            if ammoAmount and ammoAmount > 0 then
+                                                if compatibleAmmo and compatibleAmmo:GetAttribute(ammoItem.Name) then
+                                                    foundAmmo = ammoItem
+                                                    break
+                                                end
+                                            end
+                                        end
+                                        if foundAmmo then break end
+                                    end
+                                    if foundAmmo then
+                                        inventorymove_remote:FireServer(foundAmmo:GetAttribute("Slot"), item:GetAttribute("Slot"), foundAmmo.Parent, item.Parent, nil)
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end)
+            end
+        end
+    end)
+
+    if fps_usetypes then
+        local remove_bullet = getupvalue(fps_usetypes.RangedWeaponDefault, 4)
+        if remove_bullet then
+            local old_remove
+            old_remove = hookfunction(remove_bullet, function(fps_object, ...)
+                local hmm = {old_remove(fps_object, ...)}
+                if auto_reload and fps_object.Bullets == 0 and not fps_object.reloading and not fps_object.useDebounce then
+                    task.spawn(function() pcall(function() fps_object.reload(fps_object) end) end)
+                end
+                return unpack(hmm)
+            end)
+        end
+    end
+
+    if fps_reloadtypes then
+        local old_reload_magazine   = fps_reloadtypes.magazine
+        local old_reload_loadbyhand = fps_reloadtypes.loadByHand
+
+        fps_reloadtypes.magazine = function(fps_object, arg_mag)
+            if not instant_reload then return old_reload_magazine(fps_object, arg_mag) end
+            local mag = arg_mag or get_compatible_mag(fps_object)
+            if not mag then return end
+            local equipped_tool = local_gameplayvars:FindFirstChild("EquippedTool")
+            local equipped_item = equipped_tool and equipped_tool.Value
+            local equip_id = local_gameplayvars:GetAttribute("EquipId")
+            if not (equipped_item and equip_id) then return end
+            equip_remote:FireServer()
+            task.defer(function()
+                local s = 0
+                local oldparent = mag.Parent
+                repeat s += task.wait() until s > 1 or (mag and oldparent and mag.Parent and mag.Parent ~= oldparent)
+                if s > 1 then return end
+                if update_fps then pcall(function() update_fps(fps_object) end) end
+            end)
+            inventorymove_remote:FireServer(mag:GetAttribute("Slot") or mag:GetAttribute("SlotType"), "Magazine", mag.Parent, equipped_item.Attachments, nil)
+            equip_remote:FireServer(equipped_item, equip_id)
+        end
+
+        fps_reloadtypes.loadByHand = function(fps_object, arg_ammo)
+            if not instant_reload then return old_reload_loadbyhand(fps_object, arg_ammo) end
+            local ammo, ammo_amount = get_compatible_ammo(fps_object, arg_ammo)
+            if not ammo then return end
+            for i = 0, ammo_amount - 1 do
+                reload_remote:InvokeServer(nil, 1, ammo)
+                if update_fps then pcall(function() update_fps(fps_object) end) end
+            end
+        end
+    end
+end)
+
+local ExtraGroup = Tabs.Combat:AddRightGroupbox("Projectile Options")
+ExtraGroup:AddToggle("AutoShootPacket", { Text = "Auto Shoot Packet", Default = false, Callback = function(v) packetautoshoot = v end })
+ExtraGroup:AddToggle("TracerEnabled", { Text = "Bullet Tracer", Default = false, Callback = function(v) silent_aim.tracer = v end })
+    :AddColorPicker("TracerColor1", { Title = "Tracer Main Color", Default = Color3.new(1,1,1), Callback = function(v) silent_aim.tracer_color = v end })
+ExtraGroup:AddLabel("Tracer Pulse Color"):AddColorPicker("TracerColor2", { Default = Color3.fromRGB(0,128,255), Callback = function(v) silent_aim.tracer_color2 = v end })
+ExtraGroup:AddDropdown("TracerStyle", { Text = "Tracer Style", Values = {"Tracer 1", "Tracer 2"}, Default = "Tracer 1", Callback = function(v) silent_aim.tracer_style = v end })
+ExtraGroup:AddSlider("TracerThick", { Text = "Tracer Thickness", Min = 1, Max = 100, Rounding = 1, Default = 5, Callback = function(v) silent_aim.tracer_thickness = v / 10 end })
+ExtraGroup:AddSlider("TracerLife", { Text = "Tracer Lifetime", Min = 1, Max = 50, Rounding = 1, Default = 10, Callback = function(v) silent_aim.tracer_lifetime = v / 10 end })
+ExtraGroup:AddSlider("ShootSpeed", { Text = "Shoot Speed Mult", Min = 1, Max = 30, Rounding = 1, Default = 10, Callback = function(v) shootspeed = v / 10 end })
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- [BLOCK 06] INVENTORY CHECKER
+-- ═══════════════════════════════════════════════════════════════════════════
+local InvGroup = Tabs.Combat:AddLeftGroupbox("Inventory Checker")
+local InvToggle = InvGroup:AddToggle("InvChecker", {
+    Text = "Enable Inventory Checker",
+    Default = false,
+    Callback = function(v) invcheck.enabled = v end
+})
+InvToggle:AddKeyPicker("InvCheckerKey", {
+    Default = "None", Text = "Check Keybind", Mode = "Hold",
+    SyncToggleState = true, Callback = function(state) end
+})
+InvGroup:AddDropdown("InvCheckOptions", {
+    Text = "Check Options",
+    Values = {"Check Corpses", "Show Full Inventory", "Show Inventory Value"},
+    Default = {}, Multi = true,
+    Callback = function(v)
+        invcheck.showCorpse    = v["Check Corpses"] or false
+        invcheck.fullInventory = v["Show Full Inventory"] or false
+        invcheck.showValue     = v["Show Inventory Value"] or false
+        invCache.lastTargetInventory = nil
+    end
+})
+local InvTargetToggle = InvGroup:AddToggle("InvCheckTarget", {
+    Text = "Show Target Info", Default = false,
+    Callback = function(v) invcheck.showTarget = v end
+})
+InvTargetToggle:AddColorPicker("InvCheckTargetColor", {
+    Title = "Target Text Color", Default = Color3.fromRGB(255, 255, 255),
+    Callback = function(v) invcheck.targetColor = v end
+})
+InvGroup:AddSlider("InvMainScale", { Text = "Main Inv Scale", Min = 0.5, Max = 2, Rounding = 2, Default = 1, Callback = function(v)
+    invcheck.mainScale = v
+    if mainScaleObj then mainScaleObj.Scale = v end
+end })
+InvGroup:AddSlider("InvFullScale", { Text = "Full Inv Scale", Min = 0.5, Max = 2, Rounding = 2, Default = 1, Callback = function(v)
+    invcheck.fullScale = v
+    if fullScaleObj then fullScaleObj.Scale = v end
+end })
+
+local alenInvGui = Instance.new("ScreenGui")
+alenInvGui.Name = "ZalupaStatsViewer"
+alenInvGui.ResetOnSpawn = false
+alenInvGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
+alenInvGui.IgnoreGuiInset = true
+alenInvGui.DisplayOrder = 100
+pcall(function() alenInvGui.Parent = game:GetService("CoreGui") end)
+if not alenInvGui.Parent then alenInvGui.Parent = LocalPlayer:WaitForChild("PlayerGui") end
+
+local EMPTY_ICON = "rbxassetid://12459616555"
+
+local function makeDraggable(frame)
+    local dragging, dragInput, dragStart, startPos
+    frame.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = frame.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then dragging = false end
+            end)
+        end
+    end)
+    frame.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            local delta = input.Position - dragStart
+            frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+end
+
+local mainContainer = Instance.new("Frame", alenInvGui)
+mainContainer.Name = "MainInv"
+mainContainer.Size = UDim2.new(0, 235, 0, 520)
+mainContainer.Position = UDim2.new(0.5, -300, 0.5, -200)
+mainContainer.BackgroundTransparency = 1
+mainContainer.Visible = false
+mainContainer.Active = true
+makeDraggable(mainContainer)
+mainScaleObj = Instance.new("UIScale", mainContainer)
+mainScaleObj.Scale = invcheck.mainScale
+
+local infoLabel = Instance.new("TextLabel", mainContainer)
+infoLabel.Size = UDim2.new(1, 0, 0, 30)
+infoLabel.Position = UDim2.new(0, 0, 0, -35)
+infoLabel.BackgroundTransparency = 1
+infoLabel.TextColor3 = invcheck.targetColor
+infoLabel.Font = Enum.Font.GothamBold
+infoLabel.TextSize = 18
+infoLabel.TextStrokeTransparency = 0.5
+infoLabel.TextStrokeColor3 = Color3.new(0,0,0)
+infoLabel.Text = ""
+
+local mainGrid = Instance.new("UIGridLayout", mainContainer)
+mainGrid.CellSize = UDim2.new(0, 65, 0, 130)
+mainGrid.CellPadding = UDim2.new(0, 10, 0, 10)
+mainGrid.FillDirectionMaxCells = 3
+mainGrid.HorizontalAlignment = Enum.HorizontalAlignment.Center
+
+local mainSlots = {}
+for i = 1, 12 do
+    local slotFrame = Instance.new("Frame", mainContainer)
+    slotFrame.BackgroundTransparency = 1
+    local itemImg = Instance.new("ImageLabel", slotFrame)
+    itemImg.Size = UDim2.new(0, 65, 0, 65)
+    itemImg.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+    itemImg.BackgroundTransparency = 0.3
+    local attachFrame = Instance.new("Frame", slotFrame)
+    attachFrame.Size = UDim2.new(0, 65, 0, 45)
+    attachFrame.Position = UDim2.new(0, 0, 0, 70)
+    attachFrame.BackgroundTransparency = 1
+    local attachGrid = Instance.new("UIGridLayout", attachFrame)
+    attachGrid.CellSize = UDim2.new(0, 28, 0, 28)
+    attachGrid.CellPadding = UDim2.new(0, 3, 0, 3)
+    attachGrid.FillDirectionMaxCells = 2
+    attachGrid.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    local attachSlots = {}
+    for j = 1, 4 do
+        local aImg = Instance.new("ImageLabel", attachFrame)
+        aImg.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+        aImg.BackgroundTransparency = 0.3
+        attachSlots[j] = aImg
+    end
+    mainSlots[i] = { Frame = slotFrame, Item = itemImg, Attach = attachSlots }
+end
+
+local fullContainer = Instance.new("Frame", alenInvGui)
+fullContainer.Name = "FullInv"
+fullContainer.Size = UDim2.new(0, 360, 0, 240)
+fullContainer.Position = UDim2.new(0.5, -300, 0.5, 330)
+fullContainer.BackgroundTransparency = 1
+fullContainer.Visible = false
+fullContainer.Active = true
+makeDraggable(fullContainer)
+fullScaleObj = Instance.new("UIScale", fullContainer)
+fullScaleObj.Scale = invcheck.fullScale
+
+local fullGrid = Instance.new("UIGridLayout", fullContainer)
+fullGrid.CellSize = UDim2.new(0, 35, 0, 35)
+fullGrid.CellPadding = UDim2.new(0, 5, 0, 5)
+fullGrid.FillDirectionMaxCells = 9
+fullGrid.HorizontalAlignment = Enum.HorizontalAlignment.Center
+
+local fullSlots, fullCounts = {}, {}
+for i = 1, 54 do
+    local fImg = Instance.new("ImageLabel", fullContainer)
+    fImg.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+    fImg.BackgroundTransparency = 0.3
+    local txt = Instance.new("TextLabel", fImg)
+    txt.Size = UDim2.new(1, 0, 1, 0)
+    txt.BackgroundTransparency = 1
+    txt.TextColor3 = Color3.fromRGB(255, 255, 255)
+    txt.Font = Enum.Font.GothamBold
+    txt.TextSize = 10
+    txt.TextStrokeTransparency = 0.5
+    txt.TextStrokeColor3 = Color3.new(0,0,0)
+    txt.Text = ""
+    txt.ZIndex = 2
+    fullSlots[i] = fImg
+    fullCounts[i] = txt
+end
+
+local function updateInvVisibility(show)
+    mainContainer.Visible = show
+    fullContainer.Visible = show and invcheck.fullInventory
+end
+
+local function getInvItemsList() return ItemsListFolder or ReplicatedStorage:FindFirstChild("ItemsList") end
+local function getInvContainer(target)
+    if not target then return nil end
+    if target:FindFirstChild("Humanoid") then return target:FindFirstChild("Inventory") end
+    local plrFolder = ReplicatedPlayers:FindFirstChild(target.Name)
+    return plrFolder and plrFolder:FindFirstChild("Inventory")
+end
+
+local function populateInvData(target)
+    if not target or target.Name == LocalPlayer.Name then return end
+    local itemsList = getInvItemsList()
+    if not itemsList then return end
+    if invCache.lastTargetInventory == target and invCache.lastFullInventory == invcheck.fullInventory then return end
+    invCache.lastTargetInventory = target
+    invCache.lastFullInventory = invcheck.fullInventory
+    local inventory = getInvContainer(target)
+    if not inventory then return end
+    for i = 1, 12 do
+        mainSlots[i].Item.Image = EMPTY_ICON
+        if mainSlots[i].Attach then
+            for j = 1, 4 do mainSlots[i].Attach[j].Image = EMPTY_ICON end
+        end
+    end
+    for i = 1, 54 do
+        fullSlots[i].Image = EMPTY_ICON
+        fullCounts[i].Text = ""
+    end
+    local weaponIdx = 1
+    local clothingIdx = 4
+    for _, item in pairs(inventory:GetChildren()) do
+        local slot = item:GetAttribute("Slot")
+        if slot and slot:find("Clothing") then
+            local itemDef = itemsList:FindFirstChild(item.Name)
+            local icon = itemDef and itemDef:FindFirstChild("ItemProperties") and itemDef.ItemProperties:FindFirstChild("ItemIcon")
+            if icon and clothingIdx <= 12 then
+                mainSlots[clothingIdx].Item.Image = icon.Image
+                clothingIdx = clothingIdx + 1
+            end
+        elseif item:FindFirstChild("Attachments") then
+            local itemDef = itemsList:FindFirstChild(item.Name)
+            local icon = itemDef and itemDef:FindFirstChild("ItemProperties") and itemDef.ItemProperties:FindFirstChild("ItemIcon")
+            if icon and weaponIdx <= 3 then
+                mainSlots[weaponIdx].Item.Image = icon.Image
+                for _, att in pairs(item.Attachments:GetChildren()) do
+                    local attSlot = att:GetAttribute("Slot")
+                    local attDef = itemsList:FindFirstChild(att.Name)
+                    local idx
+                    if attSlot == "Magazine" then idx = 1
+                    elseif attSlot == "Sight" then idx = 2
+                    elseif attSlot == "Muzzle" then idx = 3
+                    elseif attSlot == "Extra" then idx = 4 end
+                    if idx and attDef then
+                        local aicon = attDef:FindFirstChild("ItemProperties") and attDef.ItemProperties:FindFirstChild("ItemIcon")
+                        if aicon then mainSlots[weaponIdx].Attach[idx].Image = aicon.Image end
+                    end
+                end
+                weaponIdx = weaponIdx + 1
+            end
+        end
+    end
+    if invcheck.fullInventory then
+        local idx = 1
+        for _, container in pairs(inventory:GetChildren()) do
+            local inner = container:FindFirstChild("Inventory")
+            if inner and container.Name ~= "KeyChain" then
+                for _, item in pairs(inner:GetChildren()) do
+                    if idx > 54 then break end
+                    local itemDef = itemsList:FindFirstChild(item.Name)
+                    local icon = itemDef and itemDef:FindFirstChild("ItemProperties") and itemDef.ItemProperties:FindFirstChild("ItemIcon")
+                    if icon then
+                        fullSlots[idx].Image = icon.Image
+                        local amount = item:GetAttribute("Amount") or 1
+                        if amount >= 1000 then amount = math.floor(amount / 1000) .. "K"
+                        else amount = "x" .. amount end
+                        fullCounts[idx].Text = amount
+                        idx = idx + 1
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function getInvValue(target)
+    if invCache.lastTargetValueName == target then return invCache.lastTargetValue end
+    local itemsList = getInvItemsList()
+    if not itemsList then return 0 end
+    local inventory = getInvContainer(target)
+    local total = 0
+    if inventory then
+        for _, slot in pairs(inventory:GetChildren()) do
+            local slotName = slot:GetAttribute("Slot")
+            if slotName and slotName:find("Clothing") and slot:FindFirstChild("Inventory") then
+                for _, item in pairs(slot.Inventory:GetChildren()) do
+                    local itemDef = itemsList:FindFirstChild(item.Name)
+                    if itemDef and itemDef:FindFirstChild("ItemProperties") then
+                        if item.Name ~= "Rubles" then
+                            local price = itemDef.ItemProperties:GetAttribute("Price") or 1
+                            if price >= 10 then
+                                local itemType = itemDef.ItemProperties:GetAttribute("ItemType")
+                                if itemType == "Extra" then price = price * 0.4
+                                elseif itemType == "Ammo" then price = price * (item:GetAttribute("Amount") or 1) * 0.7
+                                elseif itemType == "Clothing" then price = price * 0.35
+                                elseif itemType == "Medical" then price = price * 0.75
+                                elseif itemType == "Barter" then price = price * 0.4 end
+                            end
+                            total = total + price
+                        else
+                            total = total + (item:GetAttribute("Amount") or 1)
+                        end
+                    end
+                end
+            end
+        end
+    end
+    invCache.lastTargetValueName = target
+    invCache.lastTargetValue = math.floor(total)
+    return math.floor(total)
+end
+
+local function getInvTarget()
+    local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+    local best, bestDist = nil, 1000
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and plr.Character then
+            local head = plr.Character:FindFirstChild("Head")
+            local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+            if head and hum and hum.Health > 0 then
+                local pos, onScreen = Camera:WorldToViewportPoint(head.Position)
+                if onScreen and pos.Z > 0 then
+                    local d = (Vector2.new(pos.X, pos.Y) - center).Magnitude
+                    if d < bestDist then bestDist = d; best = plr end
+                end
+            end
+        end
+    end
+    if invcheck.showCorpse then
+        local dropped = Workspace:FindFirstChild("DroppedItems")
+        if dropped then
+            for _, corpse in ipairs(dropped:GetChildren()) do
+                if corpse:FindFirstChild("Humanoid") and corpse:FindFirstChild("Head")
+                   and corpse.Name ~= LocalPlayer.Name and not corpse:FindFirstChild("AttackedBy") then
+                    local pos, onScreen = Camera:WorldToViewportPoint(corpse.Head.Position)
+                    if onScreen and pos.Z > 0 then
+                        local d = (Vector2.new(pos.X, pos.Y) - center).Magnitude
+                        if d < bestDist then bestDist = d; best = corpse end
+                    end
+                end
+            end
+        end
+    end
+    return best
+end
+
+local _inv_acc = 0
+local _inv_was_visible = false
+cheat.utility.new_heartbeat(function(delta)
+    if not invcheck.enabled then
+        if _inv_was_visible then updateInvVisibility(false); _inv_was_visible = false end
+        invCache.lastTargetInventory = nil
+        return
+    end
+    _inv_acc = _inv_acc + delta
+    if _inv_acc < 0.1 then return end
+    _inv_acc = 0
+    local target = getInvTarget()
+    if not target then
+        if _inv_was_visible then updateInvVisibility(false); _inv_was_visible = false end
+        invCache.lastTargetInventory = nil
+        return
+    end
+    populateInvData(target)
+    updateInvVisibility(true)
+    _inv_was_visible = true
+    if invcheck.showTarget then
+        local labelText = target.Name
+        if target:FindFirstChild("Humanoid") then labelText = labelText .. " [CORPSE]" end
+        if invcheck.showValue then labelText = labelText .. " | $" .. getInvValue(target) end
+        infoLabel.Text = labelText
+        infoLabel.TextColor3 = invcheck.targetColor
+    else
+        infoLabel.Text = ""
+    end
+end)
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- [BLOCK 07] CUSTOM SOUNDS
+-- ═══════════════════════════════════════════════════════════════════════════
+local SoundGroup = Tabs.Settings:AddLeftGroupbox("Custom Sounds")
+local hitsound_options = {"never lose","rust","gamesense","fatalety","fahhhh","csgo kill","csgo headshot","minecraft bow","fortnite headshot","arsenal headshot","fallen headshot","mogged","moan","mommy asmr"}
+local hitsound_ids = {
+    ["never lose"]        ="rbxassetid://6607204501", ["rust"]              ="rbxassetid://4764109000",
+    ["gamesense"]         ="rbxassetid://4817809188", ["fatalety"]          ="rbxassetid://94204395881101",
+    ["fahhhh"]            ="rbxassetid://134512042804789", ["csgo kill"]         ="rbxassetid://7269900245",
+    ["csgo headshot"]     ="rbxassetid://6937353691", ["minecraft bow"]     ="rbxassetid://1053296915",
+    ["fortnite headshot"] ="rbxassetid://2513174484", ["arsenal headshot"]  ="rbxassetid://8522515167",
+    ["fallen headshot"]   ="rbxassetid://988593556", ["mogged"]            ="rbxassetid://130607335183129",
+    ["moan"]              ="rbxassetid://7606020137", ["mommy asmr"]        ="rbxassetid://111500468013640",
+}
+local gunsound_options = {"minecraft bow","oof","fart","hee hee","this is sparta","godzilla","roger that"}
+local gunsound_ids = {
+    ["minecraft bow"]  ="rbxassetid://3442683707", ["oof"]            ="rbxassetid://3060494212",
+    ["fart"]           ="rbxassetid://3068648094", ["hee hee"]        ="rbxassetid://3048623108",
+    ["this is sparta"] ="rbxassetid://130781067", ["godzilla"]       ="rbxassetid://130783046",
+    ["roger that"]     ="rbxassetid://135308704",
+}
+local MOAN_ID = "rbxassetid://7606020137"
+local snd_cfg = {
+    hs_enabled = false, hs_id = hitsound_ids["gamesense"], hs_vol = 1,
+    gs_enabled = false, gs_id = gunsound_ids["minecraft bow"], gs_vol = 1
+}
+
+local function preload_sound(id)
+    if not id or id == "" then return end
+    task.spawn(function()
+        local temp = Instance.new("Sound")
+        temp.SoundId = id
+        pcall(function() game:GetService("ContentProvider"):PreloadAsync({temp}) end)
+        temp:Destroy()
+    end)
+end
+
+SoundGroup:AddToggle("snd_hs_on", { Text = "Custom Hit Sound", Default = false, Callback = function(v) snd_cfg.hs_enabled = v; if v then preload_sound(snd_cfg.hs_id) end end })
+SoundGroup:AddDropdown("snd_hs_pick", { Text = "Hit Sound", Values = hitsound_options, Default = "gamesense", Callback = function(v)
+    snd_cfg.hs_id = hitsound_ids[v] or snd_cfg.hs_id
+    if snd_cfg.hs_enabled then preload_sound(snd_cfg.hs_id) end
+end })
+SoundGroup:AddSlider("snd_hs_vol", { Text = "Hit Volume", Min = 1, Max = 500, Rounding = 0, Default = 100, Callback = function(v) snd_cfg.hs_vol = v / 100 end })
+SoundGroup:AddButton("snd_hs_test", { Text = "Test Hit Sound", Callback = function()
+    local s = Instance.new("Sound")
+    s.SoundId = snd_cfg.hs_id; s.Volume = snd_cfg.hs_vol
+    if snd_cfg.hs_id == MOAN_ID then s.TimePosition = 2 end
+    s.Parent = game:GetService("SoundService"); s:Play()
+    if snd_cfg.hs_id == MOAN_ID then task.delay(0.9, function() if s and s.Parent then s:Stop() end end) end
+    game:GetService("Debris"):AddItem(s, 5)
+end })
+
+SoundGroup:AddToggle("snd_gs_on", { Text = "Custom Gun Sound", Default = false, Callback = function(v) snd_cfg.gs_enabled = v; if v then preload_sound(snd_cfg.gs_id) end end })
+SoundGroup:AddDropdown("snd_gs_pick", { Text = "Gun Sound", Values = gunsound_options, Default = "minecraft bow", Callback = function(v)
+    snd_cfg.gs_id = gunsound_ids[v] or snd_cfg.gs_id
+    if snd_cfg.gs_enabled then preload_sound(snd_cfg.gs_id) end
+end })
+SoundGroup:AddSlider("snd_gs_vol", { Text = "Gun Volume", Min = 1, Max = 500, Rounding = 0, Default = 100, Callback = function(v) snd_cfg.gs_vol = v / 100 end })
+SoundGroup:AddButton("snd_gs_test", { Text = "Test Gun Sound", Callback = function()
+    local s = Instance.new("Sound")
+    s.SoundId = snd_cfg.gs_id; s.Volume = snd_cfg.gs_vol
+    s.Parent = game:GetService("SoundService"); s:Play()
+    game:GetService("Debris"):AddItem(s, 5)
+end })
+
+local hitsound_detect = {["rbxassetid://4585382589"]=true,["rbxassetid://4585351098"]=true,["rbxassetid://4585382046"]=true,["rbxassetid://4585364605"]=true}
+local function apply_custom_hitsound(sound)
+    if sound:IsA("Sound") and snd_cfg.hs_enabled and hitsound_detect[sound.SoundId] then
+        pcall(function()
+            sound.SoundId = snd_cfg.hs_id
+            sound.Volume  = snd_cfg.hs_vol
+            if snd_cfg.hs_id == MOAN_ID then
+                sound.TimePosition = 2
+                task.delay(0.9, function() if sound and sound.Parent then sound:Stop() end end)
+            end
+        end)
+    end
+end
+
+local pg = LocalPlayer:WaitForChild("PlayerGui", 10)
+pg.ChildAdded:Connect(function(child)
+    if child.Name == "MainGui" then child.ChildAdded:Connect(apply_custom_hitsound) end
+end)
+local existing_maingui = pg:FindFirstChild("MainGui")
+if existing_maingui then existing_maingui.ChildAdded:Connect(apply_custom_hitsound) end
+
+local gun_sound_names_set = {FireSound=true, FireFarSound=true, FireSoundSupressed=true}
+local function apply_custom_gunsound(inst)
+    if not (inst:IsA("Sound") and gun_sound_names_set[inst.Name] and snd_cfg.gs_enabled) then return end
+    if not (inst:IsDescendantOf(Camera) or (LocalPlayer.Character and inst:IsDescendantOf(LocalPlayer.Character))) then return end
+    pcall(function()
+        inst.SoundId = snd_cfg.gs_id
+        inst.Volume  = snd_cfg.gs_vol
+    end)
+end
+
+Camera.DescendantAdded:Connect(apply_custom_gunsound)
+LocalPlayer.CharacterAdded:Connect(function(char)
+    char.DescendantAdded:Connect(apply_custom_gunsound)
+end)
+local char = LocalPlayer.Character
+if char then
+    char.DescendantAdded:Connect(apply_custom_gunsound)
+    for _, d in ipairs(char:GetDescendants()) do apply_custom_gunsound(d) end
+end
+for _, d in ipairs(Camera:GetDescendants()) do apply_custom_gunsound(d) end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- [BLOCK 08] ESP LIBRARY (FIX #4: dict lookup + next() для пустой проверки)
+-- ═══════════════════════════════════════════════════════════════════════════
+cheat.EspLibrary = {} do
+    local esp_table: any = {}  -- FIX: `: any` чтобы анализатор не считал поля nil
+    local ws   = Workspace
+    local lplr = Players.LocalPlayer
+    local success, coregui = pcall(game.GetService, game, "CoreGui")
+    local container = Instance.new("Folder",
+        (success and coregui:FindFirstChild("RobloxGui"))
+        or lplr:WaitForChild("PlayerGui", 2) or lplr)
+
+    esp_table = {
+        __loaded = false,
+        main_settings = {
+            textSize = 14, textFont = Drawing.Fonts.Monospace,
+        },
+        settings = {
+            enemy = {
+                enabled = false, box = false, box_fill = false,
+                realname = false, health = false, dist = false,
+                weapon = false, skeleton = false,
+                dist_outline = false,
+                box_color = { Color3.new(1,1,1), 0 },
+                box_fill_color = { Color3.new(1,0,0), 0.5 },
+                realname_color = { Color3.new(1,1,1), 0 },
+                dist_color = { Color3.new(1,1,1), 0 },
+                weapon_color = { Color3.new(1,1,1), 0 },
+                skeleton_color = { Color3.new(1,1,1), 0 },
+                health_color_top    = Color3.new(0,1,0),
+                health_color_bottom = Color3.new(1,0,0),
+                health_thickness = 2, health_glow_size = 5,
+                dist_outline_color = Color3.new(),
+                chams = false, chams_visible_only = false,
+                chams_fill_color = { Color3.fromRGB(255,255,255), 0.7 },
+                chamsoutline_color = { Color3.fromRGB(255,255,255), 0 },
+                chams_outline = false, chams_material = "Neon",
+                chams_rainbow = false, chams_pulse = false,
+                chams_health_reactive = false, chams_visible_split = false,
+                chams_occluded_color = { Color3.fromRGB(255,50,50), 0.5 },
+                chams_outline_pulse = false, chams_strobe = false,
+                chams_intensity = 0.5, chams_saturation = 1.0,
+            },
+            corpse = {
+                enabled = false, name = true, distance = false,
+                color = Color3.fromRGB(0,255,0),
+                outline = false, outline_color = Color3.new(),
+            },
+        },
+        objectAdded = {},
+        objectRemoving = {},
+    }
+
+    local loaded_plrs = {}
+    local camera = ws.CurrentCamera
+    local VERTICES = {
+        Vector3.new(-1,-1,-1), Vector3.new(-1,1,-1), Vector3.new(-1,1,1), Vector3.new(-1,-1,1),
+        Vector3.new( 1,-1,-1), Vector3.new( 1,1,-1), Vector3.new( 1,1,1), Vector3.new( 1,-1,1),
+    }
+    local skeleton_order = {
+        LeftFoot="LeftLowerLeg", LeftLowerLeg="LeftUpperLeg", LeftUpperLeg="LowerTorso",
+        RightFoot="RightLowerLeg", RightLowerLeg="RightUpperLeg", RightUpperLeg="LowerTorso",
+        LeftHand="LeftLowerArm", LeftLowerArm="LeftUpperArm", LeftUpperArm="UpperTorso",
+        RightHand="RightLowerArm", RightLowerArm="RightUpperArm", RightUpperArm="UpperTorso",
+        LowerTorso="UpperTorso", UpperTorso="Head",
+    }
+
+    local function create_obj(kind, args)
+        local o = Drawing.new(kind)
+        for i,v in args do o[i] = v end
+        return o
+    end
+    local function isBodyPart(name)
+        return name=="Head" or name:find("Torso") or name:find("Leg") or name:find("Arm")
+            or name:find("Mi24") or name:find("Prop_") or name:find("Hull")
+            or name:find("BTR") or name:find("Pilot")
+    end
+
+    local function getBoundingBox(parts)
+        local minX, minY, minZ = 1e9, 1e9, 1e9
+        local maxX, maxY, maxZ = -1e9, -1e9, -1e9
+        for i=1,#parts do
+            local part = parts[i]
+            local cf, sz = part.CFrame, part.Size
+            local p1 = (cf - sz*0.5).Position
+            local p2 = (cf + sz*0.5).Position
+            minX = math.min(minX, p1.X, p2.X); minY = math.min(minY, p1.Y, p2.Y); minZ = math.min(minZ, p1.Z, p2.Z)
+            maxX = math.max(maxX, p1.X, p2.X); maxY = math.max(maxY, p1.Y, p2.Y); maxZ = math.max(maxZ, p1.Z, p2.Z)
+        end
+        local min = Vector3.new(minX, minY, minZ)
+        local max = Vector3.new(maxX, maxY, maxZ)
+        local center = (min + max) * 0.5
+        return CFrame.new(center, Vector3.new(center.X, center.Y, max.Z)), max - min
+    end
+
+    local function worldToScreen(world)
+        local s, ib = camera:WorldToViewportPoint(world)
+        return Vector2.new(s.X, s.Y), ib, s.Z
+    end
+    local function calculateCorners(cf, sz)
+        local c = table.create(#VERTICES)
+        for i=1,#VERTICES do
+            c[i] = worldToScreen((cf + sz*0.5*VERTICES[i]).Position)
+        end
+        local mnX, mnY = 1e9, 1e9
+        local mxX, mxY = -1e9, -1e9
+        for _, v in ipairs(c) do
+            if v.X < mnX then mnX = v.X end
+            if v.Y < mnY then mnY = v.Y end
+            if v.X > mxX then mxX = v.X end
+            if v.Y > mxY then mxY = v.Y end
+        end
+        return {
+            corners = c,
+            topLeft     = Vector2.new(math.floor(mnX), math.floor(mnY)),
+            topRight    = Vector2.new(math.floor(mxX), math.floor(mnY)),
+            bottomLeft  = Vector2.new(math.floor(mnX), math.floor(mxY)),
+            bottomRight = Vector2.new(math.floor(mxX), math.floor(mxY)),
+        }
+    end
+    local function get_mainpart(model, mn)
+        if mn == "corpse" then return model:FindFirstChild("UpperTorso") end
+        return nil  -- FIX: explicit return nil (ImplicitReturn warning)
+    end
+    local function identify_model(model, mn)
+        if not model then return false end
+        if mn == "corpse" and model:FindFirstChildOfClass("Humanoid") then
+            return model.Name.."'s corpse"
+        end
+        return false
+    end
+
+    local _esp_acc = 0
+    local _esp_update = true
+    cheat.utility.new_renderstepped(function(delta)
+        _esp_acc = _esp_acc + delta
+        if _esp_acc >= 1/30 then
+            _esp_acc = 0
+            _esp_update = true
+        else
+            _esp_update = false
+        end
+    end)
+
+    local function create_esp(player, isnpc)
+        if not player then return end
+        if player.ClassName == "Model" then isnpc = true end
+        loaded_plrs[player] = {
+            obj = {
+                box_fill   = create_obj("Square", { Filled=true,  Visible=false }),
+                box        = create_obj("Square", { Filled=false, Thickness=1, Visible=false }),
+                realname   = create_obj("Text",   { Center=true, Visible=false, Text=player.Name }),
+                healthtext = create_obj("Text",   { Center=false, Visible=false }),
+                health_bar_cap_top    = create_obj("Circle", { Visible=false, Filled=true, ZIndex=2 }),
+                health_bar_cap_bottom = create_obj("Circle", { Visible=false, Filled=true, ZIndex=2 }),
+                dist       = create_obj("Text", { Center=true, Visible=false }),
+                weapon     = create_obj("Text", { Center=true, Visible=false }),
+            },
+            chams_object = Instance.new("Highlight", container),
+            chams_active = false,
+            chams_original = {},
+            last_chams_update = 0,
+            plr_instance = player,
+        }
+        for k in next, skeleton_order do
+            loaded_plrs[player].obj["skeleton_"..k] = create_obj("Line", { Visible=false })
+        end
+        for i=1,10 do
+            loaded_plrs[player].obj["health_bar_"..i] = create_obj("Line", { Visible=false, Thickness=2, ZIndex=2 })
+        end
+        for i=1,6 do
+            loaded_plrs[player].obj["health_bar_glow_"..i]           = create_obj("Line",   { Visible=false, ZIndex=1 })
+            loaded_plrs[player].obj["health_bar_glow_cap_top_"..i]   = create_obj("Circle", { Visible=false, Filled=true, ZIndex=1 })
+            loaded_plrs[player].obj["health_bar_glow_cap_bottom_"..i]= create_obj("Circle", { Visible=false, Filled=true, ZIndex=1 })
+        end
+
+        local plr = loaded_plrs[player]
+        local obj = plr.obj
+        local box, box_fill = obj.box, obj.box_fill
+        local healthtext, realname, dist, weapon = obj.healthtext, obj.realname, obj.dist, obj.weapon
+        local cham = plr.chams_object
+        local settings      = esp_table.settings.enemy
+        local main_settings = esp_table.main_settings
+        local setvis_cache = false
+
+        function plr:forceupdate()
+            local isWireframe = settings.chams_material == "Wireframe"
+            cham.DepthMode         = settings.chams_visible_only and 1 or 0
+            cham.FillColor         = settings.chams_fill_color[1]
+            cham.FillTransparency  = isWireframe and 1 or settings.chams_fill_color[2]
+            cham.OutlineColor      = settings.chamsoutline_color[1]
+            cham.OutlineTransparency = settings.chams_outline and settings.chamsoutline_color[2] or 1
+            box.Color, box.Transparency = settings.box_color[1], settings.box_color[2]
+            box_fill.Color, box_fill.Transparency = settings.box_fill_color[1], settings.box_fill_color[2]
+            realname.Size, realname.Font = main_settings.textSize, main_settings.textFont
+            realname.Color = settings.realname_color[1]
+            realname.Outline, realname.OutlineColor = settings.dist_outline, settings.dist_outline_color
+            dist.Size, dist.Font = main_settings.textSize, main_settings.textFont
+            dist.Color = settings.dist_color[1]
+            dist.Outline, dist.OutlineColor = settings.dist_outline, settings.dist_outline_color
+            weapon.Size, weapon.Font = main_settings.textSize, main_settings.textFont
+            weapon.Color = settings.weapon_color[1]
+            weapon.Outline, weapon.OutlineColor = settings.dist_outline, settings.dist_outline_color
+            for k in next, skeleton_order do
+                local sk = obj["skeleton_"..k]
+                if sk then sk.Color, sk.Transparency = settings.skeleton_color[1], settings.skeleton_color[2] end
+            end
+            for i=1,10 do
+                if obj["health_bar_"..i] then obj["health_bar_"..i].Thickness = settings.health_thickness end
+            end
+        end
+
+        function plr:togglevis(bool)
+            if setvis_cache == bool then return end
+            setvis_cache = bool
+            if not bool then
+                for _, v in obj do v.Visible = false end
+                cham.Enabled = false
+                return
+            end
+            cham.Enabled = settings.chams
+            box.Visible       = settings.box
+            box_fill.Visible  = settings.box_fill
+            realname.Visible  = settings.realname
+            healthtext.Visible = false
+            obj.health_bar_cap_top.Visible    = settings.health
+            obj.health_bar_cap_bottom.Visible = settings.health
+            for i=1,6 do
+                obj["health_bar_glow_"..i].Visible            = settings.health
+                obj["health_bar_glow_cap_top_"..i].Visible    = settings.health
+                obj["health_bar_glow_cap_bottom_"..i].Visible = settings.health
+            end
+            for i=1,10 do obj["health_bar_"..i].Visible = settings.health end
+            dist.Visible   = settings.dist
+            weapon.Visible = settings.weapon
+            for k in next, skeleton_order do
+                obj["skeleton_"..k].Visible = settings.skeleton
+            end
+        end
+
+        plr.connection = cheat.utility.new_renderstepped(function(delta)
+            if not _esp_update then return end
+            local plr = loaded_plrs[player]
+            if not plr then return end
+            if not settings.enabled then return plr:togglevis(false) end
+            local character = isnpc and player or (not isnpc and player.Character)
+            local humanoid  = character and character:FindFirstChildOfClass("Humanoid")
+            local head      = character and character:FindFirstChild("Head")
+            local is_heli = isnpc and character and (character.Name=="MI24V" or character.Name=="BTR80")
+            if is_heli then
+                head = character:FindFirstChild("CollisionPilot", true) or character:FindFirstChild("Mi24_Prop_M", true)
+                humanoid = humanoid or { Health=character:GetAttribute("Health") or 1000, MaxHealth=1000, Parent=character }
+            end
+            if not (character and head and humanoid and character.Parent and (head.Parent or is_heli) and (humanoid.Parent or is_heli)) then
+                realname.Visible = false
+                return plr:togglevis(false)
+            end
+            local _, onScreen = camera:WorldToViewportPoint(head.Position)
+            if not onScreen then return plr:togglevis(false) end
+            local dist3d = (camera.CFrame.p - head.Position).Magnitude
+            local health = humanoid.Health
+            if health <= 0 then return plr:togglevis(false) end
+            local maxhealth = humanoid.MaxHealth
+
+            if plr.last_character ~= character then
+                plr.last_character = character
+                plr.body_parts = {}
+                plr._skel_parts = nil
+                local check_desc = isnpc and (character.Name=="MI24V" or character.Name=="BTR80")
+                for _, part in (check_desc and character:GetDescendants() or character:GetChildren()) do
+                    if part:IsA("BasePart") and isBodyPart(part.Name) then
+                        plr.body_parts[#plr.body_parts+1] = part
+                    end
+                end
+            end
+            if not plr.body_parts or #plr.body_parts <= 0 then return plr:togglevis(false) end
+            local corners = calculateCorners(getBoundingBox(plr.body_parts))
+            plr:togglevis(true)
+            cham.Adornee = character
+
+            box.Position      = corners.topLeft
+            box.Size          = corners.bottomRight - corners.topLeft
+            box_fill.Position = corners.topLeft
+            box_fill.Size     = corners.bottomRight - corners.topLeft
+
+            local healthbar_top_y = corners.topLeft.Y
+            if (corners.bottomLeft.Y - corners.topLeft.Y) < 5 then
+                healthbar_top_y = corners.bottomLeft.Y - 5
+            end
+            local top_text_y = math.min(corners.topLeft.Y, healthbar_top_y)
+            realname.Position = Vector2.new((corners.topLeft.X+corners.topRight.X)*0.5, top_text_y) - Vector2.yAxis - (Vector2.yAxis * realname.TextBounds.Y) - Vector2.new(0,2)
+            realname.Text = player.Name
+
+            dist.Text     = math.round(dist3d/3).." meters"
+            dist.Position = (corners.bottomLeft + corners.bottomRight) * 0.5
+            local _cl = os.clock()
+            if not plr._gun_cache_time or (_cl - plr._gun_cache_time) > 0.5 then
+                plr._gun_cache_time = _cl
+                plr._gun_cache_text = isnpc and "" or esp_table.get_gun(player)
+            end
+            weapon.Text = plr._gun_cache_text or ""
+            weapon.Position = dist.Position + (dist.Visible and Vector2.yAxis * dist.TextBounds.Y - Vector2.new(0,2) or Vector2.zero)
+
+            healthtext.Visible = false
+            local hp = math.clamp(health/maxhealth, 0, 1)
+            local bar_start = corners.bottomLeft - Vector2.new(6,0)
+            local bar_end   = corners.topLeft    - Vector2.new(6,0)
+            if (bar_start.Y - bar_end.Y) < 5 then bar_end = bar_start - Vector2.new(0,5) end
+            local gc = settings.health_color_top:Lerp(settings.health_color_bottom, 0.5)
+            for i=1,6 do
+                local glow = obj["health_bar_glow_"..i]
+                local ct, cb = obj["health_bar_glow_cap_top_"..i], obj["health_bar_glow_cap_bottom_"..i]
+                if settings.health and hp > 0 then
+                    local th = (i/6) * settings.health_glow_size
+                    local tr = 0.3 - (i*0.04)
+                    glow.Visible, glow.From, glow.To = true, bar_start, bar_start:Lerp(bar_end, hp)
+                    glow.Color, glow.Thickness, glow.Transparency = gc, th, tr
+                    ct.Visible, ct.Position, ct.Color, ct.Radius, ct.Transparency = true, bar_start:Lerp(bar_end, hp), gc, th/2, tr
+                    cb.Visible, cb.Position, cb.Color, cb.Radius, cb.Transparency = true, bar_start, gc, th/2, tr
+                else
+                    glow.Visible, ct.Visible, cb.Visible = false, false, false
+                end
+            end
+            if settings.health and hp > 0 then
+                obj.health_bar_cap_top.Visible    = true
+                obj.health_bar_cap_top.Position   = bar_start:Lerp(bar_end, hp)
+                obj.health_bar_cap_top.Color      = settings.health_color_top:Lerp(settings.health_color_bottom, 1-hp)
+                obj.health_bar_cap_top.Radius     = settings.health_thickness/2
+                obj.health_bar_cap_bottom.Visible = true
+                obj.health_bar_cap_bottom.Position= bar_start
+                obj.health_bar_cap_bottom.Color   = settings.health_color_bottom
+                obj.health_bar_cap_bottom.Radius  = settings.health_thickness/2
+            else
+                obj.health_bar_cap_top.Visible, obj.health_bar_cap_bottom.Visible = false, false
+            end
+            for i=1,10 do
+                local sl = obj["health_bar_"..i]
+                if settings.health and i <= math.ceil(hp*10) then
+                    sl.Visible = true
+                    local ss = bar_start:Lerp(bar_end, (i-1)/10)
+                    local se = bar_start:Lerp(bar_end, i/10)
+                    if i == math.ceil(hp*10) then se = bar_start:Lerp(bar_end, hp) end
+                    sl.From, sl.To = ss, se
+                    sl.Color = settings.health_color_top:Lerp(settings.health_color_bottom, 1-(i/10))
+                else
+                    sl.Visible = false
+                end
+            end
+
+            if settings.skeleton then
+                if not plr._skel_parts then
+                    plr._skel_parts = {}
+                    for _, part in next, character:GetChildren() do
+                        local pn = skeleton_order[part.Name]
+                        if pn then
+                            local pi = character:FindFirstChild(pn)
+                            local ln = obj["skeleton_"..part.Name]
+                            if pi and ln then
+                                plr._skel_parts[#plr._skel_parts+1] = { part=part, parent=pi, line=ln }
+                            end
+                        end
+                    end
+                end
+                for i=1,#plr._skel_parts do
+                    local e = plr._skel_parts[i]
+                    if e.part.Parent and e.parent.Parent then
+                        local a = camera:WorldToViewportPoint(e.part.Position)
+                        local b = camera:WorldToViewportPoint(e.parent.Position)
+                        e.line.From = Vector2.new(a.X, a.Y)
+                        e.line.To   = Vector2.new(b.X, b.Y)
+                    end
+                end
+            end
+
+            cham.Adornee = character
+            cham.Enabled = settings.chams
+            if settings.chams then
+                if settings.chams_visible_split then
+                    cham.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+                else
+                    cham.DepthMode = settings.chams_visible_only and Enum.HighlightDepthMode.Occluded
+                        or Enum.HighlightDepthMode.AlwaysOnTop
+                end
+                local int_off = (math.clamp(settings.chams_intensity or 0.5, 0, 1) - 0.5) * 2
+                if settings.chams_health_reactive and not settings.chams_rainbow then
+                    local hpp = math.clamp(health/math.max(maxhealth, 1), 0, 1)
+                    cham.FillColor = Color3.fromHSV(hpp*(1/3), math.clamp(settings.chams_saturation or 1, 0, 1), 1)
+                    cham.FillTransparency = math.clamp(settings.chams_fill_color[2] + int_off, 0, 0.99)
+                elseif settings.chams_visible_split then
+                    local vis = silent_aim and silent_aim.isvisible or false
+                    if vis then
+                        cham.FillColor, cham.FillTransparency = settings.chams_fill_color[1], math.clamp(settings.chams_fill_color[2]+int_off, 0, 0.99)
+                    else
+                        cham.FillColor, cham.FillTransparency = settings.chams_occluded_color[1], math.clamp(settings.chams_occluded_color[2]+int_off, 0, 0.99)
+                    end
+                elseif not settings.chams_rainbow and not settings.chams_pulse then
+                    cham.FillColor        = settings.chams_fill_color[1]
+                    cham.FillTransparency = math.clamp(settings.chams_fill_color[2]+int_off, 0, 0.99)
+                end
+                cham.OutlineColor        = settings.chamsoutline_color[1]
+                cham.OutlineTransparency = settings.chams_outline and math.clamp(settings.chamsoutline_color[2]+int_off, 0, 0.99) or 1
+            end
+        end)
+        plr:forceupdate()
+    end
+
+    local function create_object_esp(model, modelname)
+        if not model then return end
+        local name = identify_model(model, modelname)
+        if not name then return end
+        loaded_plrs[model] = { obj = { name = create_obj("Text", { Center=true, Visible=false, Text=name }) } }
+        local plr = loaded_plrs[model]
+        local label = plr.obj.name
+        local ecm = esp_table.settings.corpse
+        local setvis = false
+        plr.connection = cheat.utility.new_heartbeat(function()
+            if not ecm.enabled then
+                if setvis then for _,v in plr.obj do v.Visible = false end; setvis = false end
+                return
+            end
+            local mp = get_mainpart(model, modelname)
+            local wp = mp and mp.Position or model:GetPivot().Position
+            local pos, on = worldToScreen(wp)
+            if not on then
+                if setvis then for _,v in plr.obj do v.Visible = false end; setvis = false end
+                return
+            end
+            local s = ""
+            if ecm.name then s = name end
+            if ecm.distance then
+                local d = math.floor((camera.CFrame.p - wp).Magnitude/4)
+                s = (s ~= "" and (s.." ["..d.."m]")) or ("["..d.."m]")
+            end
+            if s == "" then
+                if setvis then for _,v in plr.obj do v.Visible = false end; setvis = false end
+                return
+            end
+            label.Text    = s
+            label.Position = pos
+            label.Size    = esp_table.main_settings.textSize
+            label.Font    = esp_table.main_settings.textFont
+            label.Color   = ecm.color
+            label.Outline = ecm.outline
+            label.OutlineColor = ecm.outline_color
+            if not setvis then for _,v in plr.obj do v.Visible = true end; setvis = true end
+        end)
+    end
+
+    local function destroy_esp(player)
+        if not loaded_plrs[player] then return end
+        loaded_plrs[player].connection:Disconnect()
+        for _,v in loaded_plrs[player].obj do v:Remove() end
+        if loaded_plrs[player].chams_object then loaded_plrs[player].chams_object:Destroy() end
+        loaded_plrs[player] = nil
+    end
+
+    function esp_table.load()
+        if esp_table.__loaded then return end
+        local function shortcut(is_obj, remove, name)
+            return function(model)
+                if remove then destroy_esp(model)
+                elseif is_obj then create_object_esp(model, name)
+                else create_esp(model) end
+            end
+        end
+        for _, v in next, Players:GetPlayers() do
+            if v ~= lplr then create_esp(v) end
+        end
+        local az = ws:FindFirstChild("AiZones")
+        if az then
+            for _, folder in next, az:GetChildren() do
+                for _, npc in next, folder:GetChildren() do create_esp(npc, true) end
+            end
+        end
+        local dropped = ws:FindFirstChild("DroppedItems")
+        if dropped then
+            for _, item in next, dropped:GetChildren() do create_object_esp(item, "corpse") end
+        end
+        esp_table.objectAdded = { Players.PlayerAdded:Connect(shortcut(false, false)) }
+        esp_table.objectRemoving = { Players.PlayerRemoving:Connect(shortcut(false, true)) }
+        if dropped then
+            table.insert(esp_table.objectAdded,    dropped.ChildAdded:Connect(shortcut(true, false, "corpse")))
+            table.insert(esp_table.objectRemoving, dropped.ChildRemoved:Connect(shortcut(true, true, "corpse")))
+        end
+        if az then
+            for _, z in pairs(az:GetChildren()) do
+                table.insert(esp_table.objectAdded,    z.ChildAdded:Connect(shortcut(false, false)))
+                table.insert(esp_table.objectRemoving, z.ChildRemoved:Connect(shortcut(false, true)))
+            end
+        end
+        esp_table.__loaded = true
+    end
+
+    function esp_table.unload()
+        if not esp_table.__loaded then return end
+        for p in next, loaded_plrs do destroy_esp(p) end
+        for _, c in next, esp_table.objectAdded or {} do c:Disconnect() end
+        for _, c in next, esp_table.objectRemoving or {} do c:Disconnect() end
+        esp_table.__loaded = false
+    end
+
+    function esp_table.get_gun(player)
+        local gun = "None"
+        local P = ReplicatedPlayers:FindFirstChild(player.Name)
+        if P and P:FindFirstChild("Status") and P.Status:FindFirstChild("GameplayVariables")
+            and P.Status.GameplayVariables:FindFirstChild("EquippedTool")
+            and P.Status.GameplayVariables.EquippedTool.Value then
+            gun = tostring(P.Status.GameplayVariables.EquippedTool.Value)
+        end
+
+        if item_finder_esp_enabled then
+            -- FIX #4: selected_finder_items — это dict из Obsidian dropdown.
+            -- Было `#selected_finder_items > 0` → всегда 0 для dict.
+            -- Стало `next(...) ~= nil` — универсальная проверка.
+            if selected_finder_items and next(selected_finder_items) ~= nil then
+                local p_inv = P and P:FindFirstChild("Inventory")
+                if p_inv then
+                    local found = {}
+                    local function scan(item)
+                        if selected_finder_items[item.Name] then
+                            table.insert(found, item.Name)
+                        end
+                        local inner = item:FindFirstChild("Inventory")
+                        if inner then
+                            for _, subitem in ipairs(inner:GetChildren()) do scan(subitem) end
+                        end
+                        local atts = item:FindFirstChild("Attachments")
+                        if atts then
+                            for _, att in ipairs(atts:GetChildren()) do
+                                if selected_finder_items[att.Name] then
+                                    table.insert(found, att.Name)
+                                end
+                            end
+                        end
+                    end
+                    for _, item in ipairs(p_inv:GetChildren()) do scan(item) end
+                    if #found > 0 then
+                        local unique = {}
+                        for _, v in ipairs(found) do unique[v] = true end
+                        local unique_list = {}
+                        for k in pairs(unique) do table.insert(unique_list, k) end
+                        gun = gun .. " | [" .. table.concat(unique_list, ", ") .. "]"
+                    end
+                end
+            end
+        end
+        return gun
+    end
+
+    function esp_table.icaca()
+        for _, v in pairs(loaded_plrs) do
+            v.last_chams_update = 0
+            task.spawn(function() if v.forceupdate then v:forceupdate() end end)
+        end
+    end
+
+    do
+        local h1, h2, sp = 0, 0, 0
+        RunService:BindToRenderStep("ZalupaChamsRS", Enum.RenderPriority.Last.Value + 2, function(delta)
+            local s = esp_table.settings and esp_table.settings.enemy
+            if not s then return end
+            if not (s.chams_rainbow or s.chams_pulse or s.chams_outline_pulse or s.chams_strobe) then return end
+            h1 = (h1 + delta*0.3) % 1
+            h2 = (h2 + delta*0.5) % 1
+            sp = (sp + delta*12) % (2*math.pi)
+            local sat = math.clamp(s.chams_saturation or 1, 0, 1)
+            local rc  = Color3.fromHSV(h1, sat, 1)
+            local oc  = Color3.fromHSV(h2, sat, 1)
+            local pa  = (math.sin(tick()*3)+1)/2
+            local sa  = (math.sin(sp)>0) and 0.0 or 0.99
+            local wire= s.chams_material == "Wireframe"
+            local io  = (math.clamp(s.chams_intensity or 0.5,0,1)-0.5)*2
+            for _, pd in next, loaded_plrs do
+                local ch = pd.chams_object
+                if not (ch and ch.Enabled) then continue end
+                if s.chams_strobe then
+                    if not wire then ch.FillTransparency = sa end
+                    if s.chams_outline then ch.OutlineTransparency = sa end
+                    if s.chams_rainbow then
+                        ch.FillColor = rc
+                        if s.chams_outline then ch.OutlineColor = rc end
+                    end
+                    continue
+                end
+                if s.chams_rainbow and not s.chams_health_reactive then ch.FillColor = rc end
+                if s.chams_outline_pulse and s.chams_outline then
+                    ch.OutlineColor = oc
+                    ch.OutlineTransparency = math.clamp((math.sin(tick()*5)+1)/2 + io, 0, 0.99)
+                elseif s.chams_rainbow and s.chams_outline then
+                    ch.OutlineColor = rc
+                end
+                if s.chams_pulse and not wire and not s.chams_health_reactive and not s.chams_visible_split then
+                    ch.FillTransparency = math.clamp(pa + io, 0, 0.99)
+                end
+            end
+        end)
+    end
+
+    cheat.EspLibrary = esp_table
+end
+-- ═══════════════════════════════════════════════════════════════════════════
+-- [BLOCK 09] VISUALS TAB
+-- ═══════════════════════════════════════════════════════════════════════════
+local ESPL = Tabs.Visuals:AddLeftGroupbox("Player ESP")
+local ESPR = Tabs.Visuals:AddRightGroupbox("ESP Options")
+local WorldGroup = Tabs.Visuals:AddLeftGroupbox("World & Lighting")
+local CameraGroup = Tabs.Visuals:AddRightGroupbox("Camera/Effects")
+local ViewmodelGroup = Tabs.Visuals:AddLeftGroupbox("Viewmodel")
+local ItemFinderGroup = Tabs.Visuals:AddRightGroupbox("Item Finder")
+local EffectsGroup = Tabs.Visuals:AddLeftGroupbox("Hit Effects")
+
+local es  = cheat.EspLibrary.settings.enemy
+local ecm = cheat.EspLibrary.main_settings
+local ecos = cheat.EspLibrary.settings.corpse
+
+local function colorCb(setter)
+    return function(color, alpha)
+        setter[1] = color
+        if type(alpha) == "number" then setter[2] = 1 - alpha end
+        cheat.EspLibrary.icaca()
+    end
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- [BLOCK 09a] HIT EFFECTS HELPERS (из pin.reta)
+-- ═══════════════════════════════════════════════════════════════════════════
+local function spawn_damage_number(pos, damage)
+    if not pos or not damage then return end
+    local rounded_dmg = math.round(damage)
+    if rounded_dmg <= 0 then return end
+
+    local text_str = "-" .. tostring(rounded_dmg)
+    local color = damage_numbers_color or Color3.fromRGB(255, 75, 75)
+    local start_time = os.clock()
+    local lifetime = 1.2
+    local is_random = damage_numbers_random_dir
+    local spread_mult = damage_numbers_spread or 1
+
+    local vx_px, vy_px
+    local gravity_px = 0
+    local init_x_px = 0
+    local init_y_px = 0
+
+    if is_random then
+        local angle = math.random() * math.pi * 2
+        local speed = math.random(55, 95) * spread_mult
+        vx_px = math.cos(angle) * speed
+        vy_px = (math.sin(angle) * speed * 0.6) - (math.random(35, 70) * math.clamp(spread_mult, 0.2, 3))
+        gravity_px = 140
+    else
+        vx_px = 0
+        vy_px = -50
+        gravity_px = 0
+        init_x_px = math.random(-15, 15) * spread_mult
+        init_y_px = math.random(-8, 8) * spread_mult
+    end
+
+    local text = cheat.utility.new_drawing("Text", {
+        Text = text_str, Size = 16, Font = 2, Center = true, Outline = true,
+        OutlineColor = Color3.new(0, 0, 0), Color = color,
+        Transparency = 1, Visible = false, ZIndex = 110
+    })
+
+    local conn
+    conn = cheat.utility.new_renderstepped(function()
+        local elapsed = os.clock() - start_time
+        if elapsed >= lifetime then
+            if conn then conn:Disconnect() end
+            cheat.utility.remove_drawing(text)
+        else
+            local screen_pos, on_screen = Camera:WorldToViewportPoint(pos)
+            if on_screen and screen_pos.Z > 0 then
+                local px_x = screen_pos.X + init_x_px + (vx_px * elapsed)
+                local px_y = screen_pos.Y + init_y_px + (vy_px * elapsed) + (0.5 * gravity_px * elapsed * elapsed)
+                text.Position = Vector2.new(px_x, px_y)
+                local alpha = 1
+                if elapsed > lifetime * 0.5 then
+                    alpha = 1 - ((elapsed - lifetime * 0.5) / (lifetime * 0.5))
+                end
+                text.Transparency = math.clamp(alpha, 0, 1)
+                text.Visible = true
+            else
+                text.Visible = false
+            end
+        end
+    end)
+end
+
+local function spawn_hit_ghost(character)
+    if not character then return end
+    local clone = Instance.new("Model")
+    clone.Name = "HitGhost"
+    clone.Parent = Workspace.Terrain
+
+    local parts = {}
+    for _, part in ipairs(character:GetDescendants()) do
+        if part:IsA("BasePart") and part.Transparency < 1 and not part.Parent:IsA("Accessory") and part.Name ~= "HumanoidRootPart" then
+            local p = part:Clone()
+            p.Anchored = true
+            p.CanCollide = false
+            p.CanTouch = false
+            p.CanQuery = false
+            p.Material = Enum.Material.ForceField
+            p.Color = hitghost_color
+            p.Parent = clone
+            table.insert(parts, p)
+            for _, sub in ipairs(p:GetChildren()) do
+                if not sub:IsA("SpecialMesh") then sub:Destroy() end
+            end
+        end
+    end
+
+    local lifetime = hitghost_lifetime
+    local start_time = os.clock()
+    local conn
+    conn = cheat.utility.new_heartbeat(function()
+        local elapsed = os.clock() - start_time
+        if elapsed >= lifetime then
+            conn:Disconnect()
+            clone:Destroy()
+        else
+            local progress = elapsed / lifetime
+            for _, p in ipairs(parts) do
+                if p.Parent then p.Transparency = progress end
+            end
+        end
+    end)
+end
+
+local function remove_muzzle_flash(v)
+    if not no_muzzle_flash then return end
+    if v:IsA("ParticleEmitter") or v:IsA("Light") or v:IsA("Beam") then
+        local n, pn = v.Name:lower(), (v.Parent and v.Parent.Name:lower() or "")
+        if n:find("flash") or n:find("muzzle") or pn:find("muzzle") or pn:find("aimpart") then
+            v.Enabled = false
+            if v:IsA("ParticleEmitter") then v:Clear(); v.Transparency = NumberSequence.new(1) end
+        end
+    end
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- [BLOCK 09b] WORLD & LIGHTING
+-- ═══════════════════════════════════════════════════════════════════════════
+WorldGroup:AddToggle("Fullbright", { Text = "Fullbright", Default = false, Callback = function(v) world_globals.fullbright = v end })
+WorldGroup:AddToggle("NoFog", { Text = "No Fog", Default = false, Callback = function(v) world_globals.nofog = v end })
+WorldGroup:AddToggle("NoShadows", { Text = "No Shadows", Default = false, Callback = function(v) world_globals.noshadows = v end })
+WorldGroup:AddToggle("NoGrass", { Text = "No Grass", Default = false, Callback = function(v) pcall(function() sethiddenproperty(workspace.Terrain, "Decoration", not v) end) end })
+WorldGroup:AddToggle("NoClouds", { Text = "No Clouds", Default = false, Callback = function(v)
+    local clouds = workspace.Terrain:FindFirstChildOfClass("Clouds")
+    if clouds then clouds.Enabled = not v end
+end })
+WorldGroup:AddToggle("NoLeafs", { Text = "No Leafs", Default = false, Callback = function(v) world_globals.noleafs = v end })
+
+cheat.utility.new_heartbeat(function()
+    if world_globals.fullbright then
+        Lighting.Brightness = 10
+        Lighting.OutdoorAmbient = Color3.fromRGB(255,255,255)
+        Lighting.Ambient = Color3.fromRGB(255,255,255)
+    end
+    if world_globals.nofog then
+        if Lighting.FogEnd < 9e5 then Lighting.FogEnd = 9e9 end
+    end
+    if world_globals.noshadows then
+        if Lighting.GlobalShadows then Lighting.GlobalShadows = false end
+    end
+end)
+
+-- FIX #5: NoLeafs event-driven (не каждый heartbeat)
+local _leafs_loop_active = false
+cheat.utility.new_heartbeat(function()
+    if not world_globals.noleafs then return end
+    if _leafs_loop_active then return end
+    _leafs_loop_active = true
+    task.spawn(function()
+        while world_globals.noleafs do
+            local zones = Workspace:FindFirstChild("SpawnerZones")
+            local foliage = zones and zones:FindFirstChild("Foliage")
+            if foliage then
+                for _, f in pairs(foliage:GetDescendants()) do
+                    if f:FindFirstChildOfClass("SurfaceAppearance") and f.Transparency ~= 1 then
+                        f.Transparency = 1
+                    end
+                end
+            end
+            task.wait(10)  -- раз в 10 сек вместо 60 раз/сек
+        end
+        _leafs_loop_active = false
+    end)
+end)
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- [BLOCK 09c] PLAYER ESP
+-- ═══════════════════════════════════════════════════════════════════════════
+ESPL:AddToggle("esp_on", { Text = "Enable ESP", Default = false, Callback = function(v) es.enabled = v; cheat.EspLibrary.icaca() end })
+ESPL:AddToggle("esp_box", { Text = "Box ESP", Default = false, Callback = function(v) es.box = v; cheat.EspLibrary.icaca() end })
+    :AddColorPicker("esp_boxcol", { Title = "Box Color", Default = Color3.new(1,1,1), Callback = colorCb(es.box_color) })
+ESPL:AddToggle("esp_boxfill", { Text = "Box Fill", Default = false, Callback = function(v) es.box_fill = v; cheat.EspLibrary.icaca() end })
+    :AddColorPicker("esp_boxfillcol", { Title = "Fill Color", Default = Color3.new(1,0,0), Callback = colorCb(es.box_fill_color) })
+ESPL:AddToggle("esp_name", { Text = "Name ESP", Default = false, Callback = function(v) es.realname = v; cheat.EspLibrary.icaca() end })
+    :AddColorPicker("esp_namecol", { Title = "Name Color", Default = Color3.new(1,1,1), Callback = colorCb(es.realname_color) })
+ESPL:AddToggle("esp_health", { Text = "Health Bar", Default = false, Callback = function(v) es.health = v; cheat.EspLibrary.icaca() end })
+ESPL:AddToggle("esp_dist", { Text = "Distance", Default = false, Callback = function(v) es.dist = v; cheat.EspLibrary.icaca() end })
+    :AddColorPicker("esp_distcol", { Title = "Distance Color", Default = Color3.new(1,1,1), Callback = colorCb(es.dist_color) })
+ESPL:AddToggle("esp_weapon", { Text = "Weapon ESP", Default = false, Callback = function(v) es.weapon = v; cheat.EspLibrary.icaca() end })
+    :AddColorPicker("esp_wpcol", { Title = "Weapon Color", Default = Color3.new(1,1,1), Callback = colorCb(es.weapon_color) })
+ESPL:AddToggle("esp_skeleton", { Text = "Skeleton", Default = false, Callback = function(v) es.skeleton = v; cheat.EspLibrary.icaca() end })
+    :AddColorPicker("esp_skelcol", { Title = "Skeleton Color", Default = Color3.new(1,1,1), Callback = colorCb(es.skeleton_color) })
+ESPL:AddToggle("esp_outline", { Text = "Text Outline", Default = false, Callback = function(v) es.dist_outline = v; cheat.EspLibrary.icaca() end })
+    :AddColorPicker("esp_outlinecol", { Title = "Outline Color", Default = Color3.new(0,0,0), Callback = function(v) es.dist_outline_color = v; cheat.EspLibrary.icaca() end })
+
+ESPL:AddToggle("esp_chams", { Text = "Chams", Default = false, Callback = function(v) es.chams = v; cheat.EspLibrary.icaca() end })
+    :AddColorPicker("esp_chamscol", { Title = "Chams Fill", Default = Color3.fromRGB(255,255,255), Callback = colorCb(es.chams_fill_color) })
+ESPL:AddToggle("esp_chams_outline", { Text = "Chams Outline", Default = false, Callback = function(v) es.chams_outline = v; cheat.EspLibrary.icaca() end })
+    :AddColorPicker("esp_chamsoutcol", { Title = "Outline Color", Default = Color3.fromRGB(255,255,255), Callback = colorCb(es.chamsoutline_color) })
+ESPL:AddToggle("esp_chams_vis", { Text = "Chams Visible Only", Default = false, Callback = function(v) es.chams_visible_only = v; cheat.EspLibrary.icaca() end })
+ESPL:AddDropdown("esp_chams_mat", { Text = "Chams Material", Values = {"Neon","ForceField","Glass","SmoothPlastic","Wireframe"}, Default = "Neon", Callback = function(v) es.chams_material = v; cheat.EspLibrary.icaca() end })
+ESPL:AddToggle("esp_chams_rainbow", { Text = "Rainbow Chams", Default = false, Callback = function(v) es.chams_rainbow = v end })
+ESPL:AddToggle("esp_chams_pulse", { Text = "Pulse Chams", Default = false, Callback = function(v) es.chams_pulse = v end })
+ESPL:AddToggle("esp_chams_outpulse", { Text = "Outline Pulse Chams", Default = false, Callback = function(v) es.chams_outline_pulse = v end })
+ESPL:AddToggle("esp_chams_strobe", { Text = "Strobe Chams", Default = false, Callback = function(v) es.chams_strobe = v end })
+ESPL:AddToggle("esp_chams_health", { Text = "Health Color Chams", Default = false, Callback = function(v) es.chams_health_reactive = v; cheat.EspLibrary.icaca() end })
+ESPL:AddToggle("esp_chams_split", { Text = "Visible Split Chams", Default = false, Callback = function(v) es.chams_visible_split = v; cheat.EspLibrary.icaca() end })
+    :AddColorPicker("esp_chams_occ_col", { Title = "Occluded Color", Default = Color3.fromRGB(255,50,50), Callback = colorCb(es.chams_occluded_color) })
+ESPL:AddSlider("esp_chams_intensity", { Text = "Chams Intensity", Min = 0, Max = 1, Rounding = 2, Default = 0.5, Callback = function(v) es.chams_intensity = v; cheat.EspLibrary.icaca() end })
+ESPL:AddSlider("esp_chams_sat", { Text = "Chams Saturation", Min = 0, Max = 1, Rounding = 2, Default = 1, Callback = function(v) es.chams_saturation = v end })
+
+ESPR:AddDropdown("esp_font", { Text = "ESP Font", Values = {"UI","System","Plex","Monospace"}, Default = "Monospace", Multi = false,
+    Callback = function(v) ecm.textFont = Drawing.Fonts[v]; cheat.EspLibrary.icaca() end })
+ESPR:AddSlider("esp_fontsize", { Text = "Font Size", Min = 8, Max = 30, Rounding = 0, Default = 14,
+    Callback = function(v) ecm.textSize = v; cheat.EspLibrary.icaca() end })
+ESPR:AddLabel("Health Top"):AddColorPicker("esp_htop", { Default = Color3.new(0,1,0), Callback = function(v) es.health_color_top = v; cheat.EspLibrary.icaca() end })
+ESPR:AddLabel("Health Bottom"):AddColorPicker("esp_hbottom", { Default = Color3.new(1,0,0), Callback = function(v) es.health_color_bottom = v; cheat.EspLibrary.icaca() end })
+ESPR:AddSlider("esp_hthick", { Text = "Health Bar Thickness", Min = 1, Max = 10, Rounding = 0, Default = 2,
+    Callback = function(v) es.health_thickness = v; cheat.EspLibrary.icaca() end })
+ESPR:AddSlider("esp_hglow", { Text = "Health Bar Glow Size", Min = 1, Max = 20, Rounding = 0, Default = 5,
+    Callback = function(v) es.health_glow_size = v; cheat.EspLibrary.icaca() end })
+
+local CorpseL = Tabs.Visuals:AddRightGroupbox("Corpse ESP")
+CorpseL:AddToggle("cesp_on", { Text = "Enable Corpse ESP", Default = false, Callback = function(v) ecos.enabled = v end })
+    :AddColorPicker("cesp_col", { Title = "Color", Default = Color3.fromRGB(0,255,0), Callback = function(v) ecos.color = v end })
+CorpseL:AddToggle("cesp_name", { Text = "Show Name", Default = true, Callback = function(v) ecos.name = v end })
+CorpseL:AddToggle("cesp_dist", { Text = "Show Distance", Default = false, Callback = function(v) ecos.distance = v end })
+CorpseL:AddToggle("cesp_outline", { Text = "Outline", Default = false, Callback = function(v) ecos.outline = v end })
+    :AddColorPicker("cesp_outcol", { Title = "Outline Color", Default = Color3.new(0,0,0), Callback = function(v) ecos.outline_color = v end })
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- [BLOCK 09d] HIT EFFECTS TAB (damage numbers / muzzle flash / hit ghost)
+-- ═══════════════════════════════════════════════════════════════════════════
+EffectsGroup:AddToggle("cam_nomuzzle", { Text = "Remove Muzzle Flash", Default = false, Callback = function(v) no_muzzle_flash = v end })
+EffectsGroup:AddToggle("cam_hiteffect", { Text = "Hit/Kill Effect", Default = false, Callback = function(v) hit_effect_enabled = v end })
+EffectsGroup:AddSlider("cam_hiteff_amount", { Text = "Hit Effect Stars", Min = 50, Max = 200, Rounding = 0, Default = 100, Callback = function(v) hit_effect_amount = v end })
+
+EffectsGroup:AddToggle("damage_numbers", { Text = "Damage Numbers", Default = false, Callback = function(v) damage_numbers_enabled = v end })
+    :AddColorPicker("damage_numbers_col", { Title = "Damage Number Color", Default = Color3.fromRGB(255, 75, 75), Callback = function(v) damage_numbers_color = v end })
+EffectsGroup:AddToggle("damage_numbers_rand", { Text = "Random Directions", Default = false, Callback = function(v) damage_numbers_random_dir = v end })
+EffectsGroup:AddSlider("damage_numbers_spread", { Text = "Numbers Spread", Min = 0, Max = 20, Rounding = 1, Default = 1, Suffix = "x", Callback = function(v) damage_numbers_spread = v end })
+
+EffectsGroup:AddToggle("hitghost_enabled", { Text = "Hit Ghost", Default = false, Callback = function(v) hitghost_enabled = v end })
+    :AddColorPicker("hitghost_color", { Title = "Ghost Color", Default = Color3.fromRGB(0, 255, 255), Callback = function(v) hitghost_color = v end })
+EffectsGroup:AddSlider("hitghost_lifetime", { Text = "Ghost Fade Time", Min = 5, Max = 50, Rounding = 0, Default = 15, Suffix = "ds", Callback = function(v) hitghost_lifetime = v / 10 end })
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- [BLOCK 10] VIEWMODEL & CAMERA FX
+-- ═══════════════════════════════════════════════════════════════════════════
+ViewmodelGroup:AddSlider("vm_x", { Text = "X Offset", Min = -50, Max = 50, Rounding = 0, Default = 0, Callback = function(v) vm_x = v end })
+ViewmodelGroup:AddSlider("vm_y", { Text = "Y Offset", Min = -50, Max = 50, Rounding = 0, Default = 0, Callback = function(v) vm_y = v end })
+ViewmodelGroup:AddSlider("vm_z", { Text = "Z Offset", Min = -50, Max = 50, Rounding = 0, Default = 0, Callback = function(v) vm_z = v end })
+
+local function apply_vm_offset()
+    local vm = Camera:FindFirstChild("ViewModel")
+    if not vm then return end
+    local hrp = vm:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    local vec = Vector3.new(vm_x/10, vm_y/10, vm_z/10)
+    local function apply_joint(name)
+        local joint = hrp:FindFirstChild(name)
+        if joint and joint:IsA("Motor6D") then
+            if not joint:GetAttribute("OriginalC0") then
+                joint:SetAttribute("OriginalC0", joint.C0)
+            end
+            joint.C0 = joint:GetAttribute("OriginalC0") + vec
+        end
+    end
+    apply_joint("LeftUpperArm"); apply_joint("RightUpperArm")
+    apply_joint("ItemRoot"); apply_joint("Motor6D")
+end
+cheat.utility.new_heartbeat(apply_vm_offset)
+
+CameraGroup:AddToggle("cam_fov", { Text = "FOV Override", Default = false, Callback = function(v) cam_fov_enabled = v end })
+CameraGroup:AddSlider("cam_fov_size", { Text = "FOV Size", Min = 10, Max = 120, Rounding = 0, Default = 70, Callback = function(v) cam_fov_size = v end })
+
+local zoomToggle = CameraGroup:AddToggle("cam_zoom", { Text = "Zoom", Default = false, Callback = function(v) cam_zoom_enabled = v end })
+zoomToggle:AddKeyPicker("zoom_key", { Default = "None", Text = "Zoom Keybind", Mode = "Hold", SyncToggleState = true, Callback = function(state) cam_zoom_enabled = state end })
+
+CameraGroup:AddSlider("cam_zoom_size", { Text = "Zoom Size", Min = 1, Max = 90, Rounding = 0, Default = 10, Callback = function(v) cam_zoom_size = v end })
+CameraGroup:AddToggle("cam_noscreen", { Text = "No Screen Effects", Default = false, Callback = function(v) no_screen_fx = v end })
+
+cheat.utility.new_renderstepped(function()
+    local target_fov = cam_zoom_enabled and cam_zoom_size or cam_fov_enabled and cam_fov_size
+    if target_fov and Camera.FieldOfView ~= target_fov then
+        Camera.FieldOfView = target_fov
+    end
+end)
+
+Camera.DescendantAdded:Connect(remove_muzzle_flash)
+
+local _se_cache = nil
+local function _find_se()
+    local pg = LocalPlayer.PlayerGui
+    local ni = pg and pg:FindFirstChild("NoInsetGui")
+    local mf = ni and ni:FindFirstChild("MainFrame")
+    return mf and mf:FindFirstChild("ScreenEffects")
+end
+LocalPlayer.PlayerGui.DescendantAdded:Connect(function(d) if d.Name == "ScreenEffects" then _se_cache = d end end)
+_se_cache = _find_se()
+
+cheat.utility.new_heartbeat(function()
+    if no_muzzle_flash then
+        for _, v in Camera:GetDescendants() do remove_muzzle_flash(v) end
+    end
+    if not _se_cache or not _se_cache.Parent then _se_cache = _find_se() end
+    if _se_cache then _se_cache.Visible = not no_screen_fx end
+end)
+
+local function spawn_hit_effect(pos)
+    if not hit_effect_enabled then return end
+    local part = Instance.new("Part")
+    part.Anchored = true
+    part.CanCollide = false
+    part.Transparency = 1
+    part.Position = pos
+    part.Parent = workspace.Terrain
+
+    local emit = Instance.new("ParticleEmitter")
+    emit.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+    emit.Size = NumberSequence.new({NumberSequenceKeypoint.new(0, 1.5), NumberSequenceKeypoint.new(1, 0)})
+    emit.Color = ColorSequence.new(Color3.new(1, 1, 1))
+    emit.LightEmission = 1
+    emit.LightInfluence = 0
+    emit.ZOffset = 1
+    emit.Lifetime = NumberRange.new(1, 2)
+    emit.Rate = 0
+    emit.Speed = NumberRange.new(15, 40)
+    emit.SpreadAngle = Vector2.new(360, 360)
+    emit.Drag = 2
+    emit.Parent = part
+    emit:Emit(hit_effect_amount)
+    game:GetService("Debris"):AddItem(part, 3)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- [BLOCK 11] ITEM FINDER (из pin.reta — обновлённый, dict lookup)
+-- ═══════════════════════════════════════════════════════════════════════════
+local item_list = {}
+pcall(function()
+    local il = ItemsListFolder
+    if il then
+        for _,it in pairs(il:GetChildren()) do
+            local p = it:FindFirstChild("ItemProperties")
+            if it.Name ~= "Lighter" and not (p and p:GetAttribute("ItemType")=="Melee") then
+                table.insert(item_list, it.Name)
+            end
+        end
+    end
+end)
+table.sort(item_list, function(a,b) return string.lower(a)<string.lower(b) end)
+
+local finder_glow_size = 5
+local finder_glow_color = Color3.fromRGB(120,110,180)
+ItemFinderGroup:AddDropdown("find_items", { Text = "Items To Find", Values = item_list, Default = {}, Multi = true, Callback = function(v) selected_finder_items = v end })
+local finder_toggle = ItemFinderGroup:AddToggle("find_on", { Text = "Enable Item Finder", Default = false, Callback = function() end })
+finder_toggle:AddColorPicker("find_col", { Title = "Color", Default = Color3.fromRGB(120,110,180), Callback = function(v) finder_glow_color = v end })
+
+ItemFinderGroup:AddToggle("find_on_esp", { Text = "Show Selected Items on Player ESP", Default = false, Callback = function(v) item_finder_esp_enabled = v end })
+
+ItemFinderGroup:AddSlider("find_glow", { Text = "Glow Size", Min = 1, Max = 15, Rounding = 0, Default = 5, Callback = function(v) finder_glow_size = v end })
+ItemFinderGroup:AddSlider("find_x", { Text = "Finder X Pos", Min = 0, Max = 3000, Rounding = 0, Default = math.floor(Camera.ViewportSize.X-250), Callback = function() end })
+ItemFinderGroup:AddSlider("find_y", { Text = "Finder Y Pos", Min = 0, Max = 3000, Rounding = 0, Default = 50, Callback = function() end })
+
+local finder_panel = {}
+finder_panel.pos = Vector2.new(50, 50)
+finder_panel.width = 200
+finder_panel.dragging = false
+finder_panel.dragoffset = Vector2.new(0,0)
+finder_panel.bg     = cheat.utility.new_drawing("Square",{Visible=false,Filled=true,Color=Color3.fromRGB(20,20,20),ZIndex=100})
+finder_panel.border = cheat.utility.new_drawing("Square",{Visible=false,Filled=false,Color=Color3.fromRGB(45,45,45),Thickness=1,ZIndex=101})
+finder_panel.title  = cheat.utility.new_drawing("Text",  {Visible=false,Text="Item Finder",Size=16,Center=true,Color=Color3.new(1,1,1),Outline=true,ZIndex=102})
+finder_panel.glow = {}
+for i=1,6 do finder_panel.glow[i]=cheat.utility.new_drawing("Square",{Visible=false,Filled=false,Thickness=1,ZIndex=99}) end
+finder_panel.labels = {}
+for i=1,30 do finder_panel.labels[i]=cheat.utility.new_drawing("Text",{Visible=false,Text="",Size=14,Center=true,Color=Color3.fromRGB(200,200,200),Outline=true,ZIndex=102}) end
+
+local last_finder_scan = 0
+local finder_cache = {}
+local _finder_shown = false
+
+cheat.utility.new_heartbeat(function()
+    local enabled = finder_toggle.Value
+    if not enabled then
+        if _finder_shown then
+            finder_panel.bg.Visible=false; finder_panel.border.Visible=false; finder_panel.title.Visible=false
+            for i=1,6 do finder_panel.glow[i].Visible=false end
+            for i=1,30 do finder_panel.labels[i].Visible=false end
+            _finder_shown = false
+        end
+        return
+    end
+    _finder_shown = true
+    local found_players
+    local now3 = tick()
+    if now3 - last_finder_scan < 1 then
+        found_players = finder_cache
+    else
+        last_finder_scan = now3
+        -- FIX: selected_finder_items — dict из Obsidian, используем прямой lookup
+        found_players = {}
+        if selected_finder_items and next(selected_finder_items) ~= nil then
+            for _,player in ipairs(Players:GetPlayers()) do
+                if player~=LocalPlayer then
+                    local p_inv = ReplicatedPlayers:FindFirstChild(player.Name) and ReplicatedPlayers[player.Name]:FindFirstChild("Inventory")
+                    if p_inv then
+                        local found_for_player = {}
+                        local function check_item(item)
+                            if selected_finder_items[item.Name] and not found_for_player[item.Name] then
+                                found_for_player[item.Name]=true
+                                table.insert(found_players, player.Name.." ("..item.Name..")")
+                            end
+                            local sub_inv=item:FindFirstChild("Inventory")
+                            if sub_inv then for _,si in ipairs(sub_inv:GetChildren()) do check_item(si) end end
+                            local atts=item:FindFirstChild("Attachments")
+                            if atts then for _,at in ipairs(atts:GetChildren()) do check_item(at) end end
+                        end
+                        for _,item in ipairs(p_inv:GetChildren()) do check_item(item) end
+                    end
+                end
+            end
+        end
+        finder_cache = found_players
+    end
+
+    if #found_players>0 then
+        finder_panel.bg.Visible=true; finder_panel.border.Visible=true; finder_panel.title.Visible=true
+        local max_display=math.min(#found_players,30)
+        local h=45+(max_display*16)
+        local p=finder_panel.pos
+        local size=Vector2.new(finder_panel.width,h)
+        local mousepos=Vector2.new(Mouse.X,Mouse.Y+GuiInset.Y)
+        if UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+            local in_bounds=mousepos.X>=p.X and mousepos.X<=p.X+size.X and mousepos.Y>=p.Y and mousepos.Y<=p.Y+size.Y
+            if in_bounds or finder_panel.dragging then
+                if not finder_panel.dragging then finder_panel.dragging=true; finder_panel.dragoffset=p-mousepos end
+                finder_panel.pos=mousepos+finder_panel.dragoffset; p=finder_panel.pos
+            end
+        else finder_panel.dragging=false end
+        finder_panel.bg.Position=p; finder_panel.bg.Size=size
+        finder_panel.border.Position=p; finder_panel.border.Size=size
+        finder_panel.title.Position=p+Vector2.new(finder_panel.width/2,5)
+        local g_color=finder_glow_color; local g_size=finder_glow_size
+        for i=1,6 do
+            local th=(i/6)*g_size
+            finder_panel.glow[i].Visible=true; finder_panel.glow[i].Color=g_color
+            finder_panel.glow[i].Thickness=math.max(1,th); finder_panel.glow[i].Transparency=0.3-(i*0.04)
+            finder_panel.glow[i].Size=size+Vector2.new(th*2,th*2); finder_panel.glow[i].Position=p-Vector2.new(th,th)
+        end
+        for i=1,30 do
+            if i<=max_display then finder_panel.labels[i].Visible=true; finder_panel.labels[i].Text=found_players[i]; finder_panel.labels[i].Position=p+Vector2.new(finder_panel.width/2,25+(i*15))
+            else finder_panel.labels[i].Visible=false end
+        end
+    else
+        finder_panel.bg.Visible=false; finder_panel.border.Visible=false; finder_panel.title.Visible=false
+        for i=1,6 do finder_panel.glow[i].Visible=false end
+        for i=1,30 do finder_panel.labels[i].Visible=false end
+    end
+end)
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- [BLOCK 12] PLAYER TAB — Movement + Noclip + Bunny Hop + No Fall + Anti Drown
+-- ═══════════════════════════════════════════════════════════════════════════
+local PlayerGroup = Tabs.Player:AddLeftGroupbox("Movement")
+local MovementGroup = Tabs.Player:AddRightGroupbox("Misc Movement")
+
+local speedhack, speedhack_speed = false, 18
+local speedhack_autospeed, speedhack_autospeed_offset = false, 3
+local flyhack, flyhack_key, flyhack_speed, flyhack_speed_y = false, false, 25, 25
+local nc_state = { on = false, key = false, speed = 1, kinds = {"Floors","Walls"}, layers = 1 }
+local nc_clipActive = false
+
+-- FIX #2: Speedhack reset на выключение
+PlayerGroup:AddToggle("speedhack", {Text = "Speedhack", Default = false, Callback = function(v)
+    speedhack = v
+    if not v then
+        local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+        if hum then hum.WalkSpeed = 16 end
+    end
+end})
+PlayerGroup:AddToggle("speedhack_auto", {Text = "Auto Speed", Default = false, Callback = function(v) speedhack_autospeed = v end})
+PlayerGroup:AddSlider("speedhack_speed", {Text = "Speedhack Speed", Min = 1, Max = 24, Rounding = 1, Default = 18, Callback = function(v) speedhack_speed = v end})
+PlayerGroup:AddSlider("speedhack_offset", {Text = "Auto Speed Offset", Min = -5, Max = 5, Rounding = 1, Default = 3, Callback = function(v) speedhack_autospeed_offset = v end})
+
+local flyToggle = PlayerGroup:AddToggle("flyhack", {Text = "Flyhack", Default = false, Callback = function(v) flyhack = v end})
+flyToggle:AddKeyPicker("flyhack_key", {Default = "X", Text = "Fly Key", Mode = "Toggle", SyncToggleState = false, Callback = function(state) flyhack_key = state end})
+PlayerGroup:AddSlider("flyhack_speed", {Text = "Fly Speed", Min = 0, Max = 50, Rounding = 1, Default = 25, Callback = function(v) flyhack_speed = v end})
+PlayerGroup:AddSlider("flyhack_speed_y", {Text = "Fly Speed Y", Min = 0, Max = 50, Rounding = 1, Default = 25, Callback = function(v) flyhack_speed_y = v end})
+
+local ncToggle = PlayerGroup:AddToggle("noclip", {Text = "Noclip", Default = false, Callback = function(v)
+    nc_state.on = v
+    if not v then nc_state.key = false end
+end})
+ncToggle:AddKeyPicker("noclip_key", {Default = "C", Text = "Noclip Key", Mode = "Toggle", SyncToggleState = false, Callback = function(state)
+    nc_state.key = nc_state.on and state
+end})
+PlayerGroup:AddDropdown("noclip_kinds", {
+    Text = "Clip Through",
+    Values = {"Floors", "Walls"},
+    Default = {"Floors", "Walls"},
+    Multi = true,
+    Callback = function(v)
+        local selected = {}
+        if type(v) == "table" then
+            for k, val in next, v do
+                if type(k) == "string" then
+                    if val then table.insert(selected, k) end
+                else
+                    table.insert(selected, val)
+                end
+            end
+        end
+        nc_state.kinds = #selected > 0 and selected or {"Floors", "Walls"}
+    end
+})
+PlayerGroup:AddSlider("noclip_layers", {Text = "Max Layers", Min = 1, Max = 4, Rounding = 0, Default = 1, Callback = function(v) nc_state.layers = math.max(1, math.floor(v)) end})
+PlayerGroup:AddSlider("noclip_speed", {Text = "Clip Speed", Min = 0.5, Max = 8, Rounding = 1, Default = 1, Callback = function(v) nc_state.speed = v end})
+
+-- BUNNY HOP / NO FALL / ANTI DROWN
+local bhop_enabled = false
+local no_fall = false
+local anti_drown = false
+
+MovementGroup:AddToggle("bhop_enabled", {Text = "Bunny Hop (Velocity)", Default = false, Callback = function(v) bhop_enabled = v end})
+MovementGroup:AddToggle("no_fall", {Text = "No Fall Damage", Default = false, Callback = function(v) no_fall = v end})
+MovementGroup:AddToggle("anti_drown", {Text = "Anti Drown", Default = false, Callback = function(v) anti_drown = v end})
+
+-- Anti drown namecall hook
+local old_drown_namecall
+old_drown_namecall = hookmetamethod(game, "__namecall", function(self, ...)
+    local method = getnamecallmethod()
+    if anti_drown and not checkcaller() and (method == "FireServer" or method == "fireServer") and self.Name == "Drowning" then
+        return nil
+    end
+    return old_drown_namecall(self, ...)
+end)
+
+cheat.utility.new_heartbeat(function()
+    if anti_drown then
+        local rsPlayer = ReplicatedStorage:FindFirstChild("Players") and ReplicatedStorage.Players:FindFirstChild(LocalPlayer.Name)
+        if rsPlayer and rsPlayer:FindFirstChild("Status") and rsPlayer.Status:FindFirstChild("GameplayVariables") then
+            rsPlayer.Status.GameplayVariables:SetAttribute("Drowning", false)
+        end
+    end
+end)
+
+cheat.utility.new_heartbeat(function()
+    if not bhop_enabled then return end
+    if not UserInputService:IsKeyDown(Enum.KeyCode.Space) then return end
+    local char = LocalPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if hum and hrp and hum.Health > 0 then
+        if hum.FloorMaterial ~= Enum.Material.Air then
+            hrp.Velocity = Vector3.new(hrp.Velocity.X, 22, hrp.Velocity.Z)
+        end
+    end
+end)
+
+cheat.utility.new_heartbeat(function()
+    if not no_fall then return end
+    local char = LocalPlayer.Character
+    if not char then return end
+    local hum = char:FindFirstChild("Humanoid")
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if hum and hrp then
+        if hum:GetState() == Enum.HumanoidStateType.Freefall then
+            if hrp.AssemblyLinearVelocity.Y < -12.5 then
+                hum:ChangeState(Enum.HumanoidStateType.Landed)
+            end
+        end
+    end
+end)
+
+local function sw_calculate_speed(hrp)
+    local external_mod = hrp:GetAttribute("MovementModifier") or 0
+    local total_mod = math.clamp(external_mod, -10, 0)
+    return 18.2 + total_mod
+end
+
+cheat.utility.new_renderstepped(function(delta)
+    if not speedhack and not flyhack then return end
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not (hrp and hum) then return end
+
+    local cameralook = (Vector3.new(1, 0, 1) * Camera.CFrame.LookVector).Unit
+    local direction = Vector3.new(0, 0, 0)
+    if UserInputService:IsKeyDown(Enum.KeyCode.W) then direction = direction + cameralook end
+    if UserInputService:IsKeyDown(Enum.KeyCode.S) then direction = direction - cameralook end
+    if UserInputService:IsKeyDown(Enum.KeyCode.D) then direction = direction + Vector3.new(-cameralook.Z, 0, cameralook.X) end
+    if UserInputService:IsKeyDown(Enum.KeyCode.A) then direction = direction + Vector3.new(cameralook.Z, 0, -cameralook.X) end
+    if direction ~= Vector3.zero then direction = direction.Unit end
+
+    local calcspeed = speedhack_autospeed and (sw_calculate_speed(hrp) + speedhack_autospeed_offset) or speedhack_speed
+
+    if speedhack then hum.WalkSpeed = calcspeed end
+
+    if flyhack and flyhack_key then
+        local ydir = Vector3.zero
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then ydir = ydir + Vector3.yAxis end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then ydir = ydir - Vector3.yAxis end
+        hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+        hrp.CFrame = hrp.CFrame + (Vector3.new(1, 0, 1) * direction * flyhack_speed * delta + flyhack_speed_y * ydir * delta)
+    elseif speedhack then
+        local hmm = direction * calcspeed
+        hrp.AssemblyLinearVelocity = Vector3.new(hmm.X, hrp.AssemblyLinearVelocity.Y, hmm.Z)
+    end
+end)
+
+-- Noclip (swim port)
+do
+    local NC_PROBE_WAIT = 0.05
+    local NC_SINK = 0.35
+    local NC_RISE = 0.25
+    local NC_REACH = 3
+    local NC_MAXDROP = 6
+    local NC_DROP_SEARCH = 10
+    local NC_DWELL = 0.25
+    local NC_HELD_DIST = 4
+    local NC_HELD_TIME = 4
+    local NC_WALL_ROT = CFrame.Angles(math.pi / 2, 0, 0)
+    local NC_OK = Color3.fromRGB(130, 255, 170)
+    local NC_BAD = Color3.fromRGB(255, 93, 120)
+    local NC_MID = Color3.fromRGB(255, 210, 120)
+    local NC_IDLE = Color3.fromRGB(210, 210, 210)
+
+    local function nc_rig()
+        local c = LocalPlayer.Character
+        local h = c and c:FindFirstChild("HumanoidRootPart")
+        local hm = c and c:FindFirstChildOfClass("Humanoid")
+        return c, h, hm
+    end
+
+    local function nc_uac_pos()
+        local data = ReplicatedPlayers:FindFirstChild(LocalPlayer.Name)
+        local status = data and data:FindFirstChild("Status")
+        local uac = status and status:FindFirstChild("UAC")
+        local pos = uac and uac:GetAttribute("LastVerifiedPos")
+        if typeof(pos) == "Vector3" then return pos end
+        return nil
+    end
+
+    local nc_ray = RaycastParams.new()
+    nc_ray.FilterType = Enum.RaycastFilterType.Exclude
+    nc_ray.IgnoreWater = true
+    pcall(function() nc_ray.RespectCanCollide = true end)
+
+    local nc_over = OverlapParams.new()
+    nc_over.FilterType = Enum.RaycastFilterType.Exclude
+    pcall(function() nc_over.RespectCanCollide = true end)
+
+    local function nc_filter(char)
+        nc_ray.FilterDescendantsInstances = {char, Workspace:FindFirstChild("NoCollision"), Workspace:FindFirstChild("DroppedItems")}
+    end
+
+    local nc_probe_part = Instance.new("Part")
+    nc_probe_part.Name = "NoclipProbe"
+    nc_probe_part.Anchored = true
+    nc_probe_part.CanCollide = false
+    nc_probe_part.CanTouch = false
+    nc_probe_part.CanQuery = false
+    nc_probe_part.CastShadow = false
+    nc_probe_part.Transparency = 1
+    nc_probe_part.Size = Vector3.new(1, 1, 1)
+    nc_probe_part.Parent = Workspace.Terrain
+
+    local nc_old_gui = game:GetService("CoreGui"):FindFirstChild("ZalupaNoclip")
+    if nc_old_gui then nc_old_gui:Destroy() end
+    local nc_gui = Instance.new("ScreenGui")
+    nc_gui.Name = "ZalupaNoclip"
+    nc_gui.ResetOnSpawn = false
+    nc_gui.IgnoreGuiInset = true
+    nc_gui.DisplayOrder = 10
+    nc_gui.Parent = game:GetService("CoreGui")
+
+    local nc_label = Instance.new("TextLabel")
+    nc_label.AnchorPoint = Vector2.new(0.5, 0)
+    nc_label.Position = UDim2.new(0.5, 0, 0.5, 24)
+    nc_label.Size = UDim2.fromOffset(300, 14)
+    nc_label.BackgroundTransparency = 1
+    nc_label.Font = Enum.Font.Gotham
+    nc_label.TextSize = 12
+    nc_label.TextStrokeTransparency = 0.35
+    nc_label.TextColor3 = NC_IDLE
+    nc_label.Text = ""
+    nc_label.Visible = false
+    nc_label.Parent = nc_gui
+
+    local nc_clip, nc_plan, nc_last_part, nc_part_time, nc_cooling, nc_cool_until = nil, nil, nil, 0, false, 0
+
+    local function nc_kind_allowed(kind)
+        if type(nc_state.kinds) ~= "table" then return true end
+        return table.find(nc_state.kinds, kind) ~= nil
+    end
+
+    local function nc_dims(char, hrp, hum)
+        local feet = hum.HipHeight > 0 and hum.HipHeight + hrp.Size.Y / 2 or 3
+        local head = char and char:FindFirstChild("Head")
+        local neck, top = 1, 6
+        if head and head:IsA("BasePart") then
+            local y = hrp.CFrame:PointToObjectSpace(head.Position).Y
+            neck = y - head.Size.Y / 2
+            top = y + head.Size.Y / 2
+        end
+        return feet, math.max(0.2, neck), math.max(neck + 0.5, top)
+    end
+
+    local function nc_cf_at(plan, d)
+        return CFrame.new(plan.surf + plan.n * d) * plan.rot
+    end
+
+    local function nc_snap_ground(char, hrp, feet)
+        if not (hrp and hrp.Parent) then return end
+        if char then nc_filter(char) end
+        local p = hrp.Position
+        local hit = Workspace:Raycast(p + Vector3.new(0, 1, 0), Vector3.new(0, -256, 0), nc_ray)
+        if not hit then return end
+        local drop = p.Y - hit.Position.Y + feet
+        if drop > 0.05 then hrp.CFrame = hrp.CFrame - Vector3.new(0, drop, 0) end
+    end
+
+    local function nc_finish(mode, msg)
+        local c = nc_clip
+        if not c then return end
+        nc_clip = nil
+        nc_clipActive = false
+        local char, hrp = nc_rig()
+        if hrp and hrp.Parent then
+            pcall(function()
+                if mode == "back" then hrp.CFrame = c.start
+                elseif mode == "finish" then hrp.CFrame = c.kind == "floor" and nc_cf_at(c, c.uEnd) or c.final end
+                local done = mode ~= "back" and (mode == "finish" or (c.phase or 0) >= 2)
+                if done then
+                    nc_snap_ground(char, hrp, c.feet or 3)
+                    local cf = hrp.CFrame
+                    local lv = cf.LookVector
+                    local flat = Vector3.new(lv.X, 0, lv.Z)
+                    if flat.Magnitude < 0.001 then flat = cf.RightVector end
+                    hrp.CFrame = CFrame.lookAt(cf.Position, cf.Position + flat.Unit)
+                end
+                hrp.AssemblyLinearVelocity = Vector3.zero
+                hrp.AssemblyAngularVelocity = Vector3.zero
+            end)
+        end
+        for _, p in c.parts do if p.Parent then pcall(function() p.CanCollide = true end) end end
+        if c.hum and c.hum.Parent then pcall(function() c.hum.PlatformStand = c.stood == true end) end
+        nc_cooling = true
+        nc_cool_until = os.clock() + 0.75
+        nc_plan = nil
+        if msg then pcall(function() Library:Notify({Title = "Noclip", Description = msg, Time = 3}) end) end
+    end
+
+    RunService.Heartbeat:Connect(function()
+        if not nc_state.on then return end
+        local char, hrp, hum = nc_rig()
+        nc_label.Visible = nc_state.key and char ~= nil
+        if nc_clip then
+            local c = nc_clip
+            if c.hum ~= hum then nc_finish(nil) end
+        end
+    end)
+
+    LocalPlayer.CharacterAdded:Connect(function()
+        nc_clip = nil
+        nc_plan = nil
+        nc_last_part = nil
+        nc_clipActive = false
+    end)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- [BLOCK 13] SETTINGS & SAVE MANAGER
+-- ═══════════════════════════════════════════════════════════════════════════
+SaveManager:BuildConfigSection(Tabs.Settings)
+ThemeManager:ApplyToTab(Tabs.Settings)
+SaveManager:LoadAutoloadConfig()
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- [BLOCK 14] INSTANT EQUIP + MELEE HOOKS (FIX #1: теперь работает)
+-- ═══════════════════════════════════════════════════════════════════════════
+Camera.ChildAdded:Connect(function(child)
+    if not instant_equip then return end
+    if not child:IsA("Model") then return end
+    if child.Name:find("ESP") or child.Name:find("Ghost") or child.Name:find("Effect") then return end
+    task.spawn(function()
+        local iters = 0
+        while child.Parent and iters < 500 do
+            iters += 1
+            local hum = child:FindFirstChildOfClass("Humanoid")
+            if hum and hum.Animator then
+                for _, track in ipairs(hum.Animator:GetPlayingAnimationTracks()) do
+                    if track.Animation and track.Animation.Name == "Equip" then
+                        pcall(function()
+                            track:AdjustSpeed(15)
+                            track.TimePosition = track.Length - 0.01
+                        end)
+                        return
+                    end
+                end
+            end
+            task.wait(0.001)
+        end
+    end)
+end)
+
+local function new_hook(f, newf, usecclosure)
+    if usecclosure then
+        local old; old = hookfunction(f, newcclosure(function(...) return newf(old, ...) end))
+        return old
+    else
+        local old; old = hookfunction(f, function(...) return newf(old, ...) end)
+        return old
+    end
+end
+
+-- Melee hooks (FIX #1: no_melee_cooldown / melee_reach / melee_reach_dist теперь видны)
+task.spawn(function()
+    local melee_module
+    for _ = 1, 30 do
+        local ok, mod = pcall(function()
+            local Modules = ReplicatedStorage:FindFirstChild("Modules")
+            local FPS = Modules and Modules:FindFirstChild("FPS")
+            local Melee = FPS and FPS:FindFirstChild("Melee")
+            if not Melee then return nil end
+            return require(Melee)
+        end)
+        if ok and mod then melee_module = mod break end
+        task.wait(0.5)
+    end
+    if not melee_module then
+        warn("[Zalupa.HooK] Melee module not loaded, melee hooks skipped")
+        return
+    end
+
+    -- Hook MeleeWeaponDefault
+    local hooked = false
+    while not hooked do
+        for _, gc in pairs(getgc(true)) do
+            if type(gc) == "table"
+               and type(rawget(gc, "MeleeWeaponDefault")) == "function"
+               and not gc._melee_hooked then
+                gc._melee_hooked = true
+                local old_melee_def = gc.MeleeWeaponDefault
+
+                new_hook(old_melee_def, function(old, self, ...)
+                    if no_melee_cooldown and self then
+                        pcall(function()
+                            self.useDebounce = false
+                            local attack_type = "NormalAttack"
+                            if self.altUseCounter == 1 and self.clientAnimationTracks and self.clientAnimationTracks.UseAlt then
+                                attack_type = "NormalAttack"
+                            end
+                            melee_module:StartSwing(self.weapon, self.worldModel, self.viewModel, attack_type, self.SprintStrafe)
+                        end)
+                    end
+                    return old(self, ...)
+                end, true)
+
+                hooked = true
+                break
+            end
+        end
+        if not hooked then task.wait(1) end
+    end
+
+    -- Hook StartSwing for reach
+    if melee_module.StartSwing and not melee_module._reach_hooked then
+        melee_module._reach_hooked = true
+        local old_start_swing = melee_module.StartSwing
+        melee_module.StartSwing = function(self, p1, p2, p3, p4, p5, p6)
+            if melee_reach then
+                pcall(function()
+                    local obj =
+                        (typeof(p2) == "Instance" and p2:IsA("ObjectValue") and p2.Value) or
+                        (typeof(p1) == "Instance" and p1:IsA("ObjectValue") and p1.Value) or
+                        (typeof(p2) == "Instance" and p2) or
+                        (typeof(p1) == "Instance" and p1)
+                    if obj and obj:FindFirstChild("ItemProperties") and obj.ItemProperties:FindFirstChild("Tool") then
+                        local tool = obj.ItemProperties.Tool
+                        tool:SetAttribute("RangeNormal", 3 + melee_reach_dist)
+                        tool:SetAttribute("RangePower",  3 + melee_reach_dist)
+                    end
+                end)
+            end
+            return old_start_swing(self, p1, p2, p3, p4, p5, p6)
+        end
+    end
+end)
+
+-- updateClient hook (recoil, spread, bob, instant aim, unlock firemodes, rapid fire)
+task.spawn(function()
+    local got_that = false
+    repeat
+        local gc_list = getgc(true)
+        for i = 1, #gc_list do
+            local gc = gc_list[i]
+            if type(gc) == "table" then
+                if type(rawget(gc,"shove")) == "function" and type(rawget(gc,"update")) == "function" then
+                    new_hook(gc.shove, function(old, ...)
+                        if norecoil then pcall(old, ...) return end
+                        return old(...)
+                    end, true)
+                    new_hook(gc.update, function(old, ...)
+                        if nobob then return Vector3.zero end
+                        return old(...)
+                    end, true)
+                end
+                if rawget(gc, "updateClient") then
+                    new_hook(gc.updateClient, function(old, ...)
+                        local args = {...}; local argc = select("#", ...)
+                        if instantaim then args[1].AimInSpeed = 0; args[1].AimOutSpeed = 0 end
+                        if forceauto then
+                            local modes = args[1].FireModes
+                            local can_auto = true
+                            if type(modes) == "table" then can_auto = table.find(modes, "Auto") ~= nil
+                            elseif type(modes) == "string" then can_auto = modes:find("Auto") ~= nil end
+                            if can_auto then args[1].FireMode = "Auto" end
+                        end
+                        -- FIX: unlock firemodes
+                        if unlock_firemodes and rawget(args[1], "FireModes") then
+                            args[1].FireModes = { "Auto", "Semi" }
+                        end
+                        -- FIX #6: shootspeed inversion — делим, не умножаем
+                        if rapid_fire then args[1].FireRate = rapid_fire_delay / shootspeed end
+                        return old(unpack(args, 1, argc))
+                    end, true)
+                    got_that = true
+                end
+            end
+            if i % 300 == 0 then task.wait() end
+        end
+        if not got_that then task.wait(1) end
+    until got_that
+end)
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- [BLOCK 15] TARGETING / AUTO SHOOT / HOOKS (Silent Aim + Instant Hit)
+-- ═══════════════════════════════════════════════════════════════════════════
+local fovCircle = Drawing.new("Circle")
+fovCircle.Thickness = 1.5; fovCircle.NumSides = 60
+fovCircle.Color = Color3.new(1,1,1); fovCircle.Transparency = 0.4; fovCircle.Filled = false
+fovCircle.Visible = false
+
+local function get_gun(player)
+    local P = ReplicatedPlayers:FindFirstChild(player.Name)
+    if P and P:FindFirstChild("Status") and P.Status:FindFirstChild("GameplayVariables")
+        and P.Status.GameplayVariables:FindFirstChild("EquippedTool") and P.Status.GameplayVariables.EquippedTool.Value then
+        return tostring(P.Status.GameplayVariables.EquippedTool.Value)
+    end
+    return "None"
+end
+
+-- FIX #3: position.Z > 0 проверка (за камерой)
+local function get_closest_target(usefov, fov_size, aimpart, npc, target_heli, require_triggerable, allow_manip, manip_origin)
+    aimpart = aimpart or silent_aim.part or "Head"
+    usefov = usefov ~= nil and usefov or silent_aim.fov
+    fov_size = fov_size or silent_aim.fov_size or 100
+    npc = npc ~= nil and npc or silent_aim.target_npc
+    local heli = target_heli ~= nil and target_heli or silent_aim.target_heli
+    allow_manip = allow_manip ~= nil and allow_manip or silent_aim.corner_shoot
+    manip_origin = manip_origin ~= nil and manip_origin or silent_aim.manipulated_origin
+
+    local ermm_part, isnpc = nil, false
+    local maximum_distance = usefov and fov_size or math.huge
+    local mousepos = Vector2.new(Mouse.X, Mouse.Y)
+
+    local function is_triggerable(parent, part)
+        local char = LocalPlayer.Character
+        local vp = RaycastParams.new()
+        vp.FilterType = Enum.RaycastFilterType.Exclude
+        vp.FilterDescendantsInstances = { get_nocollision(), Camera, char }
+        local cast = Workspace:Raycast(Camera.CFrame.p, part.Position - Camera.CFrame.p, vp)
+        if not cast or (cast.Instance and cast.Instance:IsDescendantOf(parent)) then return true end
+        if allow_manip and manip_origin then
+            vp.FilterDescendantsInstances = { LocalPlayer.Character, Camera, get_nocollision() }
+            local res = Workspace:Raycast(manip_origin, part.Position - manip_origin, vp)
+            if not res or (res.Instance and res.Instance:IsDescendantOf(parent)) then return true end
+        end
+        return false
+    end
+
+    if npc then
+        local aiZones = Workspace:FindFirstChild("AiZones")
+        if aiZones then
+            for _, zone in pairs(aiZones:GetChildren()) do
+                for _, npcs in pairs(zone:GetChildren()) do
+                    local part = npcs:FindFirstChild(aimpart)
+                    local is_heli = false
+                    if heli and (npcs.Name == "MI24V" or npcs.Name == "BTR80") then
+                        is_heli = true
+                        part = npcs:FindFirstChild("CollisionPilot", true) or npcs:FindFirstChild("Mi24_Prop_M", true)
+                    end
+                    if not is_heli and (npcs.Name == "MI24V" or npcs.Name == "BTR80") then continue end
+                    local humanoid = npcs:FindFirstChildOfClass("Humanoid")
+                    if part and (is_heli or (humanoid and humanoid.Health > 0)) then
+                        if (Camera.CFrame.p - part.Position).Magnitude < 2500 then
+                            local position, onscreen = Camera:WorldToViewportPoint(part.Position)
+                            -- FIX #3: проверяем Z > 0 (не за камерой)
+                            if position.Z > 0 then
+                                local distance = (Vector2.new(position.X, position.Y - GuiInset.Y) - mousepos).Magnitude
+                                if (usefov and onscreen or not usefov) and distance < maximum_distance then
+                                    if require_triggerable then
+                                        if is_triggerable(npcs, part) then ermm_part = part; maximum_distance = distance; isnpc = true end
+                                    else
+                                        ermm_part = part; maximum_distance = distance; isnpc = true
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    for _, plr in Players:GetPlayers() do
+        local character = plr.Character
+        if plr ~= LocalPlayer and character then
+            local part = character:FindFirstChild(aimpart)
+            local humanoid = character:FindFirstChildOfClass("Humanoid")
+            if part and humanoid and humanoid.Health > 0 then
+                local position, onscreen = Camera:WorldToViewportPoint(part.Position)
+                -- FIX #3: проверяем Z > 0
+                if position.Z > 0 then
+                    local distance = (Vector2.new(position.X, position.Y - GuiInset.Y) - mousepos).Magnitude
+                    if (usefov and onscreen or not usefov) and distance <= maximum_distance then
+                        if require_triggerable then
+                            if is_triggerable(character, part) then ermm_part = part; maximum_distance = distance; isnpc = false end
+                        else
+                            ermm_part = part; maximum_distance = distance; isnpc = false
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return ermm_part, isnpc
+end
+
+local shoot_debounce = tick()
+cheat.shoot_weapon_packet = nil
+
+task.spawn(function()
+    local Remotes = ReplicatedStorage:FindFirstChild("Remotes") or ReplicatedStorage:WaitForChild("Remotes", 10)
+    if not Remotes then return end
+    local ProjectileInflict = Remotes:WaitForChild("ProjectileInflict", 10)
+    local FireProjectile    = Remotes:WaitForChild("FireProjectile", 10)
+    if not (ProjectileInflict and FireProjectile) then return end
+
+    cheat.shoot_weapon_packet = function(isvis, speedmult)
+        speedmult = speedmult or shootspeed
+        local weapon = get_gun(LocalPlayer)
+        if weapon == "None" then return end
+        local rpinv = ReplicatedPlayers:FindFirstChild(LocalPlayer.Name) and ReplicatedPlayers[LocalPlayer.Name]:FindFirstChild("Inventory")
+        local inv_weapon = rpinv and rpinv:FindFirstChild(weapon)
+        local aimpart = Camera:FindFirstChild("ViewModel") and Camera.ViewModel:FindFirstChild("AimPart")
+        if not (inv_weapon and inv_weapon:FindFirstChild("SettingsModule")) then return end
+        local ok_req, weapon_settings = pcall(require, inv_weapon:FindFirstChild("SettingsModule"))
+        if not ok_req or not rawget(weapon_settings, "FireRate") or shoot_debounce > tick() then return end
+
+        local real_orig = Camera.CFrame.p
+        if silent_aim.corner_shoot and silent_aim.manipulated_origin then
+            real_orig = silent_aim.manipulated_origin
+        end
+        local _fire_part = silent_aim.target_part
+        local _fire_pos  = _fire_part and _fire_part.Position or nil
+        local dist = _fire_pos and (_fire_pos - real_orig).Magnitude or 0
+        local autoshootdelay = tick() - (dist / 1000)
+        local rnd = math.random(-10000, 10000)
+        silent_aim._exact_fire_tick = tick()
+        local as_dir = _fire_pos and (_fire_pos - real_orig).Unit or Vector3.new(0,1,0)
+
+        local ok_inv, fire_ok = pcall(function() return FireProjectile:InvokeServer(as_dir, rnd, autoshootdelay) end)
+        if ok_inv then
+            pcall(function()
+                ProjectileInflict:FireServer(
+                    _fire_part,
+                    _fire_part.CFrame:ToObjectSpace(CFrame.new(0, 0.0001, 0)),
+                    rnd, tick()
+                )
+            end)
+            if silent_aim.tracer then
+                local t_orig = real_orig
+                if not (silent_aim.corner_shoot and silent_aim.manipulated_origin) then
+                    t_orig = aimpart and aimpart.Position or Camera.CFrame.p
+                end
+                spawn_tracer(t_orig, _fire_pos or Vector3.zero, true)
+            end
+            if hit_effect_enabled and _fire_pos then
+                spawn_hit_effect(_fire_pos)
+            end
+        end
+        -- FIX #6: shootspeed — делим на speedmult (было умножение → медленнее)
+        shoot_debounce = tick() + (rawget(weapon_settings, "FireRate") / speedmult)
+    end
+end)
+
+local corner_shoot_params = RaycastParams.new()
+corner_shoot_params.FilterType = Enum.RaycastFilterType.Exclude
+local corner_shoot_filter = {nil, nil, nil}
+
+cheat.utility.new_heartbeat(function(delta)
+    if not (silent_aim.enabled or silent_aim.triggerbot or packetautoshoot) then
+        silent_aim.target_part = nil
+        silent_aim.isvisible = false
+        fovCircle.Visible = false
+        if silent_aim._trigger_held then
+            silent_aim._trigger_held = false
+            if mouse1release then mouse1release() end
+        end
+        return
+    end
+
+    local mouse_pos = Vector2.new(Mouse.X, Mouse.Y)
+
+    silent_aim.target_part, silent_aim.is_npc = get_closest_target(silent_aim.fov, silent_aim.fov_size, silent_aim.part, silent_aim.target_npc, silent_aim.target_heli)
+
+    silent_aim.manipulated = false
+    local old_origin = silent_aim.manipulated_origin
+    silent_aim.manipulated_origin = nil
+
+    if silent_aim.target_part then
+        if silent_aim.corner_shoot then
+            local hitpart = silent_aim.target_part
+            local base_pos = Camera.CFrame.Position
+            local target_pos = hitpart.Position
+            corner_shoot_filter[1] = LocalPlayer.Character
+            corner_shoot_filter[2] = Camera
+            corner_shoot_filter[3] = get_nocollision()
+            corner_shoot_params.FilterDescendantsInstances = corner_shoot_filter
+            local res = Workspace:Raycast(base_pos, target_pos - base_pos, corner_shoot_params)
+            if not res or (res.Instance and res.Instance:IsDescendantOf(hitpart.Parent)) then
+                silent_aim.isvisible = true
+            else
+                silent_aim.isvisible = false
+                if old_origin then
+                    silent_aim.manipulated_origin = old_origin
+                    silent_aim.manipulated = true
+                else
+                    local found_origin = nil
+                    local max_dist = silent_aim.corner_shoot_dist
+                    local cam_cf = Camera.CFrame
+                    local to_target_dir = (target_pos - base_pos).Unit
+                    local right = cam_cf.RightVector
+                    local up    = cam_cf.UpVector
+                    local dirs = { right, -right, up, -up,
+                        (right + up).Unit, (-right + up).Unit,
+                        (right - up).Unit, (-right - up).Unit,
+                        (right + to_target_dir).Unit, (-right + to_target_dir).Unit }
+                    table.sort(dirs, function(a, b) return a:Dot(to_target_dir) > b:Dot(to_target_dir) end)
+                    local char_model = hitpart.Parent
+                    for d = 1, max_dist, 1 do
+                        for _di = 1, #dirs do
+                            local dir = dirs[_di]
+                            local offset = dir * d
+                            local origin = base_pos + offset
+                            if not Workspace:Raycast(base_pos, offset, corner_shoot_params) then
+                                local r = Workspace:Raycast(origin, target_pos - origin, corner_shoot_params)
+                                if not r or (r.Instance and r.Instance:IsDescendantOf(char_model)) then
+                                    local buf_offset = dir * (d + 1.5)
+                                    local buf_origin = base_pos + buf_offset
+                                    if not Workspace:Raycast(base_pos, buf_offset, corner_shoot_params) then
+                                        local br = Workspace:Raycast(buf_origin, target_pos - buf_origin, corner_shoot_params)
+                                        if not br or (br.Instance and br.Instance:IsDescendantOf(char_model)) then
+                                            found_origin = buf_origin; break
+                                        end
+                                    end
+                                    if not found_origin then found_origin = origin; break end
+                                end
+                            end
+                        end
+                        if found_origin then break end
+                    end
+                    if found_origin then
+                        silent_aim.manipulated = true
+                        silent_aim.manipulated_origin = found_origin
+                    end
+                end
+            end
+        else
+            local vp = RaycastParams.new()
+            vp.FilterType = Enum.RaycastFilterType.Exclude
+            vp.FilterDescendantsInstances = { get_nocollision(), Camera, LocalPlayer.Character }
+            local cast = Workspace:Raycast(Camera.CFrame.p, silent_aim.target_part.Position - Camera.CFrame.p, vp)
+            silent_aim.isvisible = (not cast or (cast.Instance and cast.Instance:IsDescendantOf(silent_aim.target_part.Parent)))
+        end
+    else
+        silent_aim.isvisible = false
+    end
+
+    fovCircle.Position = mouse_pos
+    fovCircle.Radius = silent_aim.fov_size
+    fovCircle.Visible = silent_aim.fov_show and silent_aim.enabled
+
+    if packetautoshoot and silent_aim.target_part and cheat.shoot_weapon_packet then
+        pcall(cheat.shoot_weapon_packet, silent_aim.isvisible, shootspeed)
+    end
+
+    local triggerable = silent_aim.isvisible
+    if silent_aim.triggerbot_manipulation and silent_aim.manipulated_origin ~= nil then
+        triggerable = true
+    end
+    if silent_aim.triggerbot and not triggerable then
+        local alt_part, alt_npc = get_closest_target(silent_aim.fov, silent_aim.fov_size, silent_aim.part, silent_aim.target_npc, silent_aim.target_heli, true, silent_aim.triggerbot_manipulation, silent_aim.manipulated_origin)
+        if alt_part then
+            silent_aim.target_part = alt_part
+            silent_aim.is_npc = alt_npc
+            triggerable = true
+        end
+    end
+
+    if silent_aim.triggerbot and silent_aim.target_part and triggerable then
+        if not silent_aim._trigger_held then
+            silent_aim._trigger_held = true
+            if mouse1press then mouse1press() end
+        end
+    else
+        if silent_aim._trigger_held then
+            silent_aim._trigger_held = false
+            if mouse1release then mouse1release() end
+        end
+    end
+end)
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- [BLOCK 15b] __namecall HOOK — Silent Aim + Instant Hit
+-- ═══════════════════════════════════════════════════════════════════════════
+local __namecall
+__namecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+    local method = getnamecallmethod()
+    if checkcaller() then return __namecall(self, ...) end
+
+    if method ~= "GetAttribute" and method ~= "Raycast"
+        and method ~= "InvokeServer" and method ~= "invokeServer"
+        and method ~= "FireServer" and method ~= "fireServer" then
+        return __namecall(self, ...)
+    end
+
+    local args = {...}
+    local argc = select("#", ...)
+
+    if method == "GetAttribute" then
+        local attribute = args[1]
+        if silent_aim.nospread and attribute == "AccuracyDeviation" then return 0 end
+        if silent_aim.enabled then
+            if attribute == "ProjectileDrop" then return 0 end
+            if attribute == "Drag" then return 0 end
+        end
+    end
+
+    -- RAYCAST: подмена результата на hit в target_part (silent aim)
+    if method == "Raycast" then
+        local origin = args[1]
+        if typeof(origin) == "Vector3" and silent_aim.enabled and silent_aim.target_part then
+            local hitpart = silent_aim.target_part
+            if hitpart and hitpart.Parent then
+                if silent_aim.corner_shoot and silent_aim.manipulated_origin then
+                    origin = silent_aim.manipulated_origin
+                    args[1] = origin
+                end
+                local direction = hitpart.Position - origin
+                args[2] = direction
+                return {
+                    Instance = hitpart,
+                    Position = hitpart.Position,
+                    Normal   = direction.Unit * -1,
+                    Material = hitpart.Material,
+                    Distance = direction.Magnitude
+                }
+            end
+        end
+    end
+
+    -- FIREPROJECTILE: silent aim direction + instant hit timestamp
+    if (method == "InvokeServer" or method == "invokeServer") and self.Name == "FireProjectile" then
+        silent_aim._exact_fire_tick = tick()
+        local origin = Workspace.CurrentCamera.CFrame.Position
+        local tp = silent_aim.enabled and silent_aim.target_part
+        local is_empty = false
+        pcall(function()
+            local wpn = get_gun(LocalPlayer)
+            if wpn == "None" then return end
+            local pi = ReplicatedPlayers:FindFirstChild(LocalPlayer.Name) and ReplicatedPlayers[LocalPlayer.Name]:FindFirstChild("Inventory")
+            local iw = pi and pi:FindFirstChild(wpn)
+            if not (iw and iw:FindFirstChild("Attachments")) then return end
+            local mag = iw.Attachments:FindFirstChild("Magazine")
+            if not mag then return end
+            local sv = mag:FindFirstChildOfClass("StringValue")
+            local ip = sv and sv:FindFirstChild("ItemProperties")
+            local la = ip and ip:FindFirstChild("LoadedAmmo")
+            if la and la:IsA("Folder") and #la:GetChildren() <= 0 then is_empty = true end
+        end)
+        if not is_empty and tp and tp.Parent then
+            if silent_aim.corner_shoot and silent_aim.manipulated_origin then
+                origin = silent_aim.manipulated_origin
+                args[1] = (tp.Position - origin).Unit
+            end
+            -- INSTANT HIT: подмена timestamp чтобы пуля прилетела мгновенно
+            if silent_aim.instant and args[3] then
+                args[3] = tick() - ((tp.Position - origin).Magnitude / 1000)
+            end
+        end
+        setnamecallmethod(method)
+        return __namecall(self, unpack(args, 1, argc))
+    end
+
+    setnamecallmethod(method)
+    return __namecall(self, unpack(args, 1, argc))
+end))
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- [BLOCK 15c] CreateBullet HOOK — charge shot + tracer + nospread
+-- ═══════════════════════════════════════════════════════════════════════════
+task.spawn(function()
+    local ok_mod, bulletmodule = pcall(require, ReplicatedStorage.Modules.FPS.Bullet)
+    if not ok_mod or not bulletmodule then return end
+    local old_bullet = bulletmodule.CreateBullet
+    local drop_proto, drop_index, drop_applied = nil, nil, false
+
+    local function apply_no_drop()
+        if drop_applied or not silent_aim.nospread or not (debug and debug.getconstants and debug.setconstant) then return end
+        local function scan(fn, depth)
+            if drop_proto or depth > 5 or type(fn) ~= "function" then return end
+            local ok, constants = pcall(debug.getconstants, fn)
+            if ok and type(constants) == "table" then
+                for index, value in constants do
+                    if value == -196.2 or value == -9.81 then drop_proto, drop_index = fn, index; return end
+                end
+            end
+            if debug.getproto then
+                for index = 1, 8 do
+                    local ok_p, proto = pcall(debug.getproto, fn, index)
+                    if not ok_p or type(proto) ~= "function" then break end
+                    scan(proto, depth + 1)
+                    if drop_proto then return end
+                end
+            end
+        end
+        for _, v in pairs(bulletmodule) do
+            if type(v) == "function" then scan(v, 0); if drop_proto then break end end
+        end
+        if drop_proto then drop_applied = pcall(debug.setconstant, drop_proto, drop_index, 0) end
+    end
+
+    bulletmodule.CreateBullet = function(self, ...)
+        local args = {...}
+        local argCount = select("#", ...)
+        if silent_aim.nospread then apply_no_drop() end
+
+        -- CHARGE SHOT: мультипликация выстрела
+        local charged_shots = 1
+        if charge_shot_enabled == true and cheat.get_charge_shot_count then
+            charged_shots = cheat.get_charge_shot_count()
+        end
+        if charged_shots > 1 then
+            for _ = 2, charged_shots do
+                local duplicate_args = table.clone(args)
+                task.spawn(function()
+                    pcall(old_bullet, self, unpack(duplicate_args, 1, argCount))
+                end)
+            end
+        end
+
+        if silent_aim.enabled and silent_aim.target_part then
+            local loadedammo, aimpart_index
+            for i, v in pairs(args) do
+                if typeof(v) == "Instance" and v.Name == "AimPart" then aimpart_index = i end
+                if type(v) == "string" then
+                    local tmp = ReplicatedStorage.AmmoTypes:FindFirstChild(v)
+                    if tmp then loadedammo = tmp end
+                end
+            end
+            if not (loadedammo and aimpart_index) then
+                return old_bullet(self, unpack(args, 1, argCount))
+            end
+
+            if silent_aim.tracer then
+                local real_orig = Camera.CFrame.p
+                if silent_aim.corner_shoot and silent_aim.manipulated_origin then
+                    real_orig = silent_aim.manipulated_origin
+                end
+                local t_orig = (silent_aim.corner_shoot and silent_aim.manipulated_origin)
+                    and real_orig or args[aimpart_index].Position
+                local t_target = silent_aim.target_part and silent_aim.target_part.Position
+                    or args[aimpart_index].CFrame.LookVector * 10000
+                spawn_tracer(t_orig, t_target, true)
+            end
+
+            if silent_aim.instant then
+                return old_bullet(self, unpack(args, 1, argCount))
+            end
+
+            local real_aimpart = args[aimpart_index]
+            local old_cf = real_aimpart.CFrame
+            local fire_origin = (silent_aim.corner_shoot and silent_aim.manipulated_origin)
+                and silent_aim.manipulated_origin or real_aimpart.Position
+            local aim_dir = (silent_aim.target_part.Position - fire_origin).Unit
+            real_aimpart.CFrame = CFrame.new(real_aimpart.Position, real_aimpart.Position + aim_dir)
+
+            local ok_call, ret = pcall(old_bullet, self, unpack(args, 1, argCount))
+            real_aimpart.CFrame = old_cf
+            if not ok_call then
+                warn("[Zalupa.HooK] CreateBullet error:", ret)
+                return
+            end
+            return ret
+        end
+        return old_bullet(self, unpack(args, 1, argCount))
+    end
+end)
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- [BLOCK 16] FINAL INIT
+-- ═══════════════════════════════════════════════════════════════════════════
+cheat.EspLibrary.load()
+Library:Notify({
+    Title = "Zalupa.HooK",
+    Description = "Tomboy Combat + pin.reta merge loaded! Silent Aim + Instant Hit ready.",
+    Time = 5
+})
